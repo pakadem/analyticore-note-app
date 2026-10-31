@@ -1,0 +1,98 @@
+@startuml AnalytiCore_Deployment_Component
+title AnalytiCore Note App — Component & Deployment View (Prototype)
+skinparam componentStyle rectangle
+skinparam shadowing false
+skinparam nodesep 40
+skinparam ranksep 50
+
+actor "Local User\n(single workstation)" as User
+
+node "Developer / Demo Host (loopback)" as Host {
+
+  node "Web Browser\n(ES2022+)" as Browser {
+    component [AnalytiCore SPA\nReact + TypeScript + Vite] as SPA {
+      component [UI Shell\nApp, Sidebar, Pages] as UI
+      component [AgentChatbox] as Chat
+      component [Document Ingestion\n(pdfjs extract + keyword retrieve)] as Ingest
+      component [Analytics\n(dataset + retail + Recharts)] as Analytics
+      component [Document Storage Client\n(/api fetch)] as StorageClient
+    }
+    component [ollama/browser SDK] as OllamaSDK
+    component [Legacy IndexedDB\n(migration only)] as IDB
+  }
+
+  node "Node.js Runtime" as NodeRuntime {
+    component [Express Document API\nserver/index.mjs\n127.0.0.1:3002] as API {
+      component [Multer upload\nvalidation] as Multer
+      component [Schema init\n+ CRUD handlers] as Handlers
+    }
+  }
+
+  node "Vite Dev Server\n(dev only)\n127.0.0.1:3000" as Vite <<optional>> {
+    component [React HMR + /api proxy\n→ 127.0.0.1:3002] as Proxy
+  }
+
+  node "Docker / Colima" as Docker {
+    database "MySQL 8.4\n127.0.0.1:3307\n(documents, document_chunks)" as MySQL
+  }
+
+  node "Ollama Service\n(host process, not in compose)" as OllamaHost {
+    component [Llama 3 / selected model\n:11434 default] as Llama
+  }
+}
+
+User --> Browser : HTTPS/HTTP UI\nhttp://127.0.0.1:3000 (dev)\nor :3002 (prod static)
+UI --> Chat
+UI --> Analytics
+UI --> StorageClient
+Chat --> Ingest : searchDocuments()
+Chat --> OllamaSDK : chat()
+Analytics --> Ingest : structured text from docs
+StorageClient --> IDB : migrate legacy uploads\non startup (if present)
+
+' Dev path
+Vite -[hidden]-> Browser
+Proxy ..> API : proxy /api/*
+StorageClient --> Proxy : /api/* (dev)
+Proxy --> API
+
+' Prod path (same host, API serves dist/)
+StorageClient --> API : /api/* (prod,\nsame origin :3002)
+
+API --> Multer
+API --> Handlers
+Handlers --> MySQL : mysql2 pool\nparameterized SQL
+
+OllamaSDK --> Llama : HTTP OpenAI-compatible\nOllama API\n(host/model from ApiConfig)
+
+note right of Vite
+  **Dev execution**
+  npm run dev =
+  concurrently api + web
+  Browser talks to Vite :3000;
+  /api proxied to API :3002.
+end note
+
+note right of API
+  **Prod execution**
+  npm run build && npm start
+  Express serves dist/ SPA
+  and /api on :3002 only.
+  Vite node is absent.
+end note
+
+note bottom of Llama
+  **Emerging technology**
+  Local generative LLM.
+  Not Dockerised by this
+  project; must be started
+  separately (ollama serve).
+end note
+
+note bottom of MySQL
+  Only container defined in
+  docker-compose.yml.
+  Bound to loopback.
+end note
+
+@enduml

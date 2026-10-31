@@ -1,0 +1,82 @@
+@startuml AnalytiCore_Deployment_Diagram
+title AnalytiCore Note App — Deployment Diagram (Prototype Execution Environment)
+skinparam shadowing false
+skinparam nodesep 50
+skinparam ranksep 60
+skinparam database {
+  BackgroundColor #ECFDF5
+  BorderColor #059669
+}
+
+actor "Local User" as User
+
+node "Demo Host Workstation\n(loopback-bound services)" as Host {
+
+  node "Web Browser\n(ES2022 module support)" as Browser {
+    artifact "AnalytiCore SPA\n(React / TypeScript bundle)" as SPA
+    artifact "ollama/browser SDK" as OllamaSDK
+  }
+
+  node "Node.js Process\nExpress API\n127.0.0.1:3002" as ApiNode {
+    artifact "server/index.mjs\n+ document CRUD" as ApiArtifact
+    artifact "Built SPA static files\n(dist/) — production only" as Dist <<optional>>
+  }
+
+  node "Vite Dev Server\n127.0.0.1:3000\n(development only)" as ViteNode <<optional>> {
+    artifact "Vite HMR + /api proxy" as ViteProxy
+  }
+
+  node "Docker / Colima Runtime" as DockerNode {
+    database "MySQL 8.4 Container\n127.0.0.1:${MYSQL_PORT:-3307}→3306\nDB: analyticore" as MySQL
+    artifact "Volume:\nanalyticore-mysql" as Volume
+  }
+
+  node "Ollama Host Process\n(not managed by docker-compose)" as OllamaNode {
+    artifact "LLM Runtime\nLlama 3 / selected model\ndefault :11434" as Llama
+  }
+}
+
+User --> Browser : use UI\nhttp://127.0.0.1:3000 (dev)\nor http://127.0.0.1:3002 (prod)
+
+' Development execution path
+Browser --> ViteNode : HTTP :3000
+ViteProxy --> ApiArtifact : proxy /api/* → :3002
+
+' Production execution path
+Browser --> ApiNode : HTTP :3002\n(SPA + /api same origin)
+ApiArtifact --> Dist : serves static assets\nwhen dist/ present
+
+' Persistence
+ApiArtifact --> MySQL : mysql2 TCP\n127.0.0.1:3307
+MySQL --> Volume : durable storage
+
+' Emerging technology
+SPA --> OllamaSDK : chat requests
+OllamaSDK --> Llama : HTTP Ollama API\n(ApiConfig.hostUrl / model)
+
+note right of ViteNode
+  **Dev:** npm run db:up
+  then npm run dev
+  (API + Vite concurrently)
+end note
+
+note right of ApiNode
+  **Prod:** npm run build
+  then npm start
+  Vite node not deployed
+end note
+
+note bottom of OllamaNode
+  Emerging technology node.
+  Start separately:
+  ollama pull <model>
+  ollama serve
+end note
+
+note bottom of DockerNode
+  Only MySQL is containerised
+  by this project's
+  docker-compose.yml.
+end note
+
+@enduml

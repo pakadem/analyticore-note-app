@@ -47,6 +47,37 @@ export interface RegressionAnalysis {
   error?: string;
 }
 
+export interface LinearRegressionFit {
+  slope: number;
+  intercept: number;
+  rSquared: number;
+}
+
+export const fitLinearRegression = (
+  points: Array<{ x: number; y: number }>
+): LinearRegressionFit | undefined => {
+  if (points.length < 3) return undefined;
+
+  const meanX = points.reduce((total, point) => total + point.x, 0) / points.length;
+  const meanY = points.reduce((total, point) => total + point.y, 0) / points.length;
+  const denominator = points.reduce((total, point) => total + (point.x - meanX) ** 2, 0);
+  if (denominator === 0) return undefined;
+
+  const slope =
+    points.reduce((total, point) => total + (point.x - meanX) * (point.y - meanY), 0) / denominator;
+  const intercept = meanY - slope * meanX;
+  const predict = (x: number) => intercept + slope * x;
+  const sumSquaredErrors = points.reduce((total, point) => total + (point.y - predict(point.x)) ** 2, 0);
+  const totalSumSquares = points.reduce((total, point) => total + (point.y - meanY) ** 2, 0);
+
+  return {
+    slope,
+    intercept,
+    rSquared:
+      totalSumSquares === 0 ? (sumSquaredErrors === 0 ? 1 : 0) : 1 - sumSquaredErrors / totalSumSquares,
+  };
+};
+
 const parseDelimitedRows = (content: string, delimiter: string): string[][] => {
   const rows: string[][] = [];
   let row: string[] = [];
@@ -119,13 +150,15 @@ const parseRetailInvoice = (content: string): Array<Record<string, string>> => {
 
     const amount = getCsvNumber(fields[fields.length - 1]?.split(/\s+/).pop());
     if (amount === undefined) continue;
+    const quantity = Number(quantityLine[1]);
 
     rows.push({
       visit_date: date,
       customer_id: customerName,
       product: barcodeAndItem[2].trim(),
-      quantity: quantityLine[1],
+      quantity: String(quantity),
       total_spend: String(amount),
+      unit_price: quantity > 0 ? String(amount / quantity) : '',
     });
   }
 
@@ -187,9 +220,9 @@ export const getStructuredDatasets = (documents: KnowledgeDocument[]): TabularDa
           return {
             id: document.id,
             name: document.name,
-            headers: ['visit_date', 'customer_id', 'product', 'quantity', 'total_spend'],
+            headers: ['visit_date', 'customer_id', 'product', 'quantity', 'total_spend', 'unit_price'],
             rows: invoiceRows,
-            numericColumns: ['quantity', 'total_spend'],
+            numericColumns: ['quantity', 'total_spend', 'unit_price'],
           };
         }
 
@@ -407,10 +440,8 @@ export const predictWithLinearRegression = (
     };
   }
 
-  const meanX = points.reduce((total, point) => total + point.x, 0) / points.length;
-  const meanY = points.reduce((total, point) => total + point.y, 0) / points.length;
-  const denominator = points.reduce((total, point) => total + (point.x - meanX) ** 2, 0);
-  if (denominator === 0) {
+  const fit = fitLinearRegression(points);
+  if (!fit) {
     return {
       points: [],
       predictions: [],
@@ -421,14 +452,7 @@ export const predictWithLinearRegression = (
     };
   }
 
-  const slope =
-    points.reduce((total, point) => total + (point.x - meanX) * (point.y - meanY), 0) / denominator;
-  const intercept = meanY - slope * meanX;
-  const predict = (x: number) => intercept + slope * x;
-  const sumSquaredErrors = points.reduce((total, point) => total + (point.y - predict(point.x)) ** 2, 0);
-  const totalSumSquares = points.reduce((total, point) => total + (point.y - meanY) ** 2, 0);
-  const rSquared =
-    totalSumSquares === 0 ? (sumSquaredErrors === 0 ? 1 : 0) : 1 - sumSquaredErrors / totalSumSquares;
+  const predict = (x: number) => fit.intercept + fit.slope * x;
 
   const minX = Math.min(...points.map((point) => point.x));
   const maxX = Math.max(...points.map((point) => point.x));
@@ -453,7 +477,7 @@ export const predictWithLinearRegression = (
   return {
     points: [...fittedPoints, ...forecastPoints],
     predictions,
-    rSquared,
+    rSquared: fit.rSquared,
     rowsAnalyzed: points.length,
     rowsExcluded,
   };

@@ -17,7 +17,12 @@ import {
 } from '../utils/datasetAnalytics';
 import type { TabularDataset } from '../utils/datasetAnalytics';
 import RetailCharts from './RetailCharts';
-import { combineRetailDatasets } from '../utils/retailAnalytics';
+import {
+  combineRetailDatasets,
+  getProductPriceHistory,
+  predictProductPrices,
+} from '../utils/retailAnalytics';
+import type { ProductPriceObservation } from '../utils/retailAnalytics';
 
 interface HomePageProps {
   documents: KnowledgeDocument[];
@@ -35,6 +40,95 @@ const clusterColors = ['#2563eb', '#7c3aed', '#059669'];
 
 const formatNumber = (value: number): string =>
   new Intl.NumberFormat(undefined, { maximumFractionDigits: 2 }).format(value);
+
+const ProductPriceForecast: React.FC<{ history: ProductPriceObservation[] }> = ({ history }) => {
+  const products = useMemo(
+    () => Array.from(new Map(history.map((observation) => [
+      observation.product.toLowerCase(),
+      observation.product,
+    ])).values()).sort((left, right) => left.localeCompare(right)),
+    [history]
+  );
+  const [selectedProduct, setSelectedProduct] = useState('');
+  const activeProduct = products.includes(selectedProduct) ? selectedProduct : products[0] ?? '';
+  const analysis = useMemo(
+    () => predictProductPrices(history, activeProduct),
+    [history, activeProduct]
+  );
+
+  return (
+    <section style={cardStyle}>
+      <div style={{ marginBottom: '16px' }}>
+        <h2 style={{ fontSize: '1.1rem', fontWeight: 'bold' }}>All-document product price forecast</h2>
+        <p style={{ color: '#64748b', fontSize: '0.8rem', marginTop: '4px' }}>
+          Linear regression over dated product prices combined from every ready upload. Repeated prices for the same product on the same day are averaged.
+        </p>
+      </div>
+
+      {products.length === 0 ? (
+        <p role="status" style={{ color: '#64748b', fontSize: '0.875rem' }}>
+          No product price history found. Upload files with date, product, and price columns to forecast.
+        </p>
+      ) : (
+        <>
+          <label style={{ display: 'grid', gap: '4px', width: 'fit-content', fontSize: '0.8rem', fontWeight: 600, marginBottom: '16px' }}>
+            Product
+            <select
+              aria-label="Product for price forecast"
+              value={activeProduct}
+              onChange={(event) => setSelectedProduct(event.target.value)}
+              style={{ minWidth: '220px', padding: '8px', borderRadius: '6px', border: '1px solid #cbd5e1' }}
+            >
+              {products.map((product) => <option key={product} value={product}>{product}</option>)}
+            </select>
+          </label>
+
+          {analysis.error ? (
+            <p role="status" style={{ color: '#b45309', fontSize: '0.875rem' }}>
+              {analysis.error} Found {analysis.rowsAnalyzed} observations across {analysis.sourceCount} source files.
+            </p>
+          ) : (
+            <>
+              <div style={{ display: 'flex', gap: '20px', flexWrap: 'wrap', marginBottom: '12px', fontSize: '0.8rem', color: '#475569' }}>
+                <span>Price observations: <strong>{analysis.rowsAnalyzed}</strong></span>
+                <span>Source files: <strong>{analysis.sourceCount}</strong></span>
+                <span>R²: <strong>{formatNumber(analysis.rSquared)}</strong></span>
+              </div>
+              <div style={{ width: '100%', height: '280px' }}>
+                <ResponsiveContainer width="100%" height="100%">
+                  <LineChart data={analysis.points} margin={{ top: 8, right: 12, bottom: 8, left: 8 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
+                    <XAxis dataKey="date" tick={{ fontSize: 11 }} />
+                    <YAxis type="number" domain={['auto', 'auto']} tick={{ fontSize: 12 }} />
+                    <Tooltip formatter={(value) => typeof value === 'number' ? formatNumber(value) : value} />
+                    <Legend />
+                    <Line type="linear" dataKey="actual" name="Observed price" stroke="#2563eb" dot={{ r: 3 }} connectNulls={false} />
+                    <Line type="linear" dataKey="fitted" name="Regression fit" stroke="#7c3aed" dot={false} connectNulls={false} />
+                    <Line type="linear" dataKey="forecast" name="Forecast price" stroke="#ea580c" strokeDasharray="5 4" dot={{ r: 4 }} connectNulls={false} />
+                  </LineChart>
+                </ResponsiveContainer>
+              </div>
+              <h3 style={{ fontSize: '0.9rem', fontWeight: 'bold', margin: '12px 0 8px' }}>
+                Next three estimated prices
+              </h3>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
+                {analysis.predictions.map((prediction) => (
+                  <div key={prediction.date} style={{ backgroundColor: '#fff7ed', borderRadius: '8px', padding: '10px 12px', fontSize: '0.8rem' }}>
+                    <div style={{ color: '#9a3412' }}>{prediction.date}</div>
+                    <strong>{formatNumber(prediction.price)}</strong>
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
+          <p style={{ color: '#64748b', fontSize: '0.75rem', marginTop: '12px' }}>
+            Forecast dates use the median gap between historical price dates. Estimates extrapolate a straight-line trend; R² is an in-sample fit measure, not a guarantee of future accuracy. Make sure source files use consistent product names, price units, and currency.
+          </p>
+        </>
+      )}
+    </section>
+  );
+};
 
 const RegressionForecast: React.FC<{ dataset: TabularDataset }> = ({ dataset }) => {
   const [targetColumn, setTargetColumn] = useState(dataset.numericColumns[0] ?? '');
@@ -224,6 +318,7 @@ const DatasetAnalysis: React.FC<{ dataset: TabularDataset }> = ({ dataset }) => 
 export const HomePage: React.FC<HomePageProps> = ({ documents, onOpenIngestion }) => {
   const datasets = useMemo(() => getStructuredDatasets(documents), [documents]);
   const combinedRetailDataset = useMemo(() => combineRetailDatasets(datasets), [datasets]);
+  const productPriceHistory = useMemo(() => getProductPriceHistory(datasets), [datasets]);
   const [selectedDatasetId, setSelectedDatasetId] = useState('');
   const selectedDataset = datasets.find((dataset) => dataset.id === selectedDatasetId) ?? datasets[0];
   const readyDocuments = documents.filter((document) => document.status === 'ready');
@@ -257,6 +352,8 @@ export const HomePage: React.FC<HomePageProps> = ({ documents, onOpenIngestion }
       </div>
 
       {combinedRetailDataset && <RetailCharts dataset={combinedRetailDataset} />}
+
+      <ProductPriceForecast history={productPriceHistory} />
 
       {datasets.length > 0 && (
         <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '10px' }}>

@@ -5,7 +5,12 @@ import HomePage from './components/HomePage';
 import DataUploadPage from './components/DataUploadPage';
 import ApiConnectionPage from './components/ApiConnectionPage';
 import AgentChatbox from './components/AgentChatbox';
-import { getDocumentStorageError, loadStoredDocuments, saveStoredDocument } from './utils/documentStorage';
+import {
+  deleteStoredDocument,
+  getDocumentStorageError,
+  loadStoredDocuments,
+  saveStoredDocument,
+} from './utils/documentStorage';
 
 export const App: React.FC = () => {
   const [activeTab, setActiveTab] = useState<NavTab>('home');
@@ -13,7 +18,7 @@ export const App: React.FC = () => {
   const [documentsLoaded, setDocumentsLoaded] = useState(false);
   const [storageError, setStorageError] = useState<string | null>(null);
   const [apiConfig, setApiConfig] = useState<ApiConfig>({
-    hostUrl: 'http://127.0.0.1:11434',
+    hostUrl: 'http://localhost:11434',
     modelName: 'llama3.1:8b',
     temperature: 0.7,
     contextWindow: 4096,
@@ -51,6 +56,12 @@ export const App: React.FC = () => {
     }
   };
 
+  const removeDocument = async (documentId: string): Promise<void> => {
+    await deleteStoredDocument(documentId);
+    setDocuments((current) => current.filter((document) => document.id !== documentId));
+    setStorageError(null);
+  };
+
   return (
     <div style={{ display: 'flex', minHeight: '100vh', backgroundColor: '#f8fafc' }}>
       {/* Left Navigation Sidebar */}
@@ -76,6 +87,7 @@ export const App: React.FC = () => {
                 documents={documents}
                 onDocumentsChange={setDocuments}
                 onPersistDocument={persistDocument}
+                onDeleteDocument={removeDocument}
               />
             )}
             {activeTab === 'api' && (

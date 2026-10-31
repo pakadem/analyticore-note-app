@@ -1,5 +1,5 @@
 import type { TabularDataset } from './datasetAnalytics';
-import { getCsvNumber } from './datasetAnalytics';
+import { fitLinearRegression, getCsvNumber } from './datasetAnalytics';
 
 export type TimeGrouping = 'day' | 'week' | 'month';
 
@@ -27,6 +27,30 @@ export interface PopularItem {
   purchases: number;
 }
 
+export interface ProductPriceObservation {
+  date: string;
+  timestamp: number;
+  product: string;
+  price: number;
+  sourceIds: string[];
+}
+
+export interface ProductPriceForecastPoint {
+  date: string;
+  actual: number | null;
+  fitted: number | null;
+  forecast: number | null;
+}
+
+export interface ProductPriceForecast {
+  points: ProductPriceForecastPoint[];
+  predictions: Array<{ date: string; price: number }>;
+  rSquared: number;
+  rowsAnalyzed: number;
+  sourceCount: number;
+  error?: string;
+}
+
 const columnHints = {
   date: ['visit date', 'transaction date', 'purchase date', 'order date', 'sale date', 'date', 'timestamp', 'time'],
   amount: ['total spend', 'total amount', 'amount spent', 'spend', 'total', 'amount', 'revenue', 'sales', 'price', 'cost'],
@@ -36,6 +60,36 @@ const columnHints = {
 } satisfies Record<keyof RetailChartColumns, string[]>;
 
 const normalizeHeader = (header: string): string => header.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+
+const inferPriceColumn = (headers: string[]): string => {
+  const candidates = headers.map((header) => ({
+    header,
+    normalized: normalizeHeader(header),
+  }));
+  const hints = [
+    'unit price',
+    'price per unit',
+    'product price',
+    'selling price',
+    'retail price',
+    'price',
+  ];
+
+  for (const hint of hints) {
+    const exact = candidates.find(({ normalized }) => normalized === hint);
+    if (exact) return exact.header;
+  }
+
+  for (const hint of hints.slice(0, -1)) {
+    const partial = candidates.find(({ normalized }) => normalized.includes(hint));
+    if (partial) return partial.header;
+  }
+
+  return candidates.find(
+    ({ normalized }) =>
+      normalized.includes('price') && !/\b(total|extended|amount|spend|revenue|sales)\b/.test(normalized)
+  )?.header ?? '';
+};
 
 export const inferRetailColumns = (headers: string[]): RetailChartColumns => {
   const infer = (key: keyof RetailChartColumns): string => {
@@ -61,6 +115,130 @@ export const inferRetailColumns = (headers: string[]): RetailChartColumns => {
     item: infer('item'),
     quantity: infer('quantity'),
     customer: infer('customer'),
+  };
+};
+
+export const getProductPriceHistory = (
+  datasets: TabularDataset[]
+): ProductPriceObservation[] => {
+  const observations = new Map<
+    string,
+    { date: string; timestamp: number; product: string; total: number; count: number; sources: Set<string> }
+  >();
+
+  datasets.forEach((dataset) => {
+    if (dataset.error) return;
+    const columns = inferRetailColumns(dataset.headers);
+    const priceColumn = inferPriceColumn(dataset.headers);
+    if (!columns.date || !columns.item || !priceColumn) return;
+
+    dataset.rows.forEach((row) => {
+      const date = parseDate(row[columns.date]);
+      const product = row[columns.item]?.trim();
+      const price = getCsvNumber(row[priceColumn]);
+      if (!date || !product || price === undefined) return;
+
+      const dateKey = getDateKey(date);
+      const key = `${product.toLowerCase()}\u0000${dateKey}`;
+      const observation = observations.get(key) ?? {
+        date: dateKey,
+        timestamp: new Date(dateKey).getTime(),
+        product,
+        total: 0,
+        count: 0,
+        sources: new Set<string>(),
+      };
+      observation.total += price;
+      observation.count += 1;
+      observation.sources.add(dataset.id);
+      observations.set(key, observation);
+    });
+  });
+
+  return Array.from(observations.values())
+    .map(({ date, timestamp, product, total, count, sources }) => ({
+      date,
+      timestamp,
+      product,
+      price: total / count,
+      sourceIds: Array.from(sources),
+    }))
+    .sort((left, right) => left.timestamp - right.timestamp || left.product.localeCompare(right.product));
+};
+
+export const predictProductPrices = (
+  history: ProductPriceObservation[],
+  selectedProduct: string
+): ProductPriceForecast => {
+  const observations = history
+    .filter((observation) => observation.product.toLowerCase() === selectedProduct.toLowerCase())
+    .sort((left, right) => left.timestamp - right.timestamp);
+  const points = observations.map((observation) => ({
+    x: (observation.timestamp - observations[0].timestamp) / 86_400_000,
+    y: observation.price,
+  }));
+  const fit = fitLinearRegression(points);
+
+  if (observations.length < 3) {
+    return {
+      points: [],
+      predictions: [],
+      rSquared: 0,
+      rowsAnalyzed: observations.length,
+      sourceCount: new Set(observations.flatMap((observation) => observation.sourceIds)).size,
+      error: 'At least three dated price observations for this product are required.',
+    };
+  }
+
+  if (!fit) {
+    return {
+      points: [],
+      predictions: [],
+      rSquared: 0,
+      rowsAnalyzed: observations.length,
+      sourceCount: new Set(observations.flatMap((observation) => observation.sourceIds)).size,
+      error: 'Price history does not vary over time, so a regression forecast cannot be fitted.',
+    };
+  }
+
+  const intervals = observations.slice(1).map(
+    (observation, index) => (observation.timestamp - observations[index].timestamp) / 86_400_000
+  );
+  const sortedIntervals = [...intervals].sort((left, right) => left - right);
+  const middle = Math.floor(sortedIntervals.length / 2);
+  const medianInterval =
+    sortedIntervals.length % 2 === 0
+      ? (sortedIntervals[middle - 1] + sortedIntervals[middle]) / 2
+      : sortedIntervals[middle];
+  const typicalInterval = Math.max(1, Math.round(medianInterval));
+  const lastTimestamp = observations[observations.length - 1].timestamp;
+  const predict = (x: number) => fit.intercept + fit.slope * x;
+  const predictions = [1, 2, 3].map((horizon) => {
+    const timestamp = lastTimestamp + typicalInterval * horizon * 86_400_000;
+    return {
+      date: new Date(timestamp).toISOString().slice(0, 10),
+      price: predict(points[points.length - 1].x + typicalInterval * horizon),
+    };
+  });
+  const fittedPoints = observations.map((observation, index) => ({
+    date: observation.date,
+    actual: observation.price,
+    fitted: predict(points[index].x),
+    forecast: null,
+  }));
+  const forecastPoints = predictions.map((prediction) => ({
+    date: prediction.date,
+    actual: null,
+    fitted: null,
+    forecast: prediction.price,
+  }));
+
+  return {
+    points: [...fittedPoints, ...forecastPoints],
+    predictions,
+    rSquared: fit.rSquared,
+    rowsAnalyzed: observations.length,
+    sourceCount: new Set(observations.flatMap((observation) => observation.sourceIds)).size,
   };
 };
 

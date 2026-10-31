@@ -1,20 +1,9 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 
-export default defineConfig(({ command }) => ({
+export default defineConfig({
   plugins: [
     react(),
-    {
-      name: 'production-content-security-policy',
-      transformIndexHtml: {
-        order: 'post',
-        handler(html) {
-          return command === 'build'
-            ? html.replace("script-src 'self' 'unsafe-inline';", "script-src 'self';")
-            : html;
-        },
-      },
-    },
   ],
   optimizeDeps: {
     esbuildOptions: {
@@ -31,4 +20,4 @@ export default defineConfig(({ command }) => ({
       '/api': 'http://127.0.0.1:3002',
     },
   },
-}));
+});

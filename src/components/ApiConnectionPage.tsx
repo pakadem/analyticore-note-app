@@ -10,32 +10,28 @@ export const ApiConnectionPage: React.FC<ApiPageProps> = ({ config, onUpdateConf
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '24px', maxWidth: '680px' }}>
       <div>
-        <h1 style={{ fontSize: '1.75rem', fontWeight: 'bold' }}>Local LLM & API Setup</h1>
-        <p style={{ color: '#64748b', fontSize: '0.875rem', marginTop: '4px' }}>Configure your local Ollama model parameters. Inference is restricted to the Ollama runtime on this device.</p>
+        <h1 style={{ fontSize: '1.75rem', fontWeight: 'bold' }}>LLM & API Setup</h1>
+        <p style={{ color: '#64748b', fontSize: '0.875rem', marginTop: '4px' }}>Configure the Ollama endpoint and model parameters.</p>
       </div>
 
       <div style={{ backgroundColor: '#ffffff', padding: '24px', borderRadius: '12px', border: '1px solid #e2e8f0', boxShadow: '0 1px 3px rgba(0,0,0,0.05)' }}>
         {/* Status Indicator */}
         <div style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '12px', backgroundColor: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: '8px', marginBottom: '20px' }}>
           <div style={{ width: '10px', height: '10px', borderRadius: '50%', backgroundColor: config.isConnected ? '#22c55e' : '#ef4444' }} />
-          <span style={{ fontSize: '0.875rem', fontWeight: '600', color: '#166534' }}>
-            {config.isConnected ? 'Connected to Local Ollama Runtime' : 'Ollama Service Unreachable'}
+          <span style={{ fontSize: '0.875rem', fontWeight: '600', color: config.isConnected ? '#166534' : '#991b1b' }}>
+            {config.isConnected ? 'Ollama endpoint configured' : 'Ollama service unreachable'}
           </span>
         </div>
 
         <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
           <div>
-            <label style={{ display: 'block', fontSize: '0.875rem', fontWeight: '600', marginBottom: '6px' }}>Local Ollama Endpoint</label>
+            <label style={{ display: 'block', fontSize: '0.875rem', fontWeight: '600', marginBottom: '6px' }}>Ollama Endpoint</label>
             <input
               type="text"
               value={config.hostUrl}
-              readOnly
-              aria-describedby="ollama-endpoint-help"
+              onChange={(e) => onUpdateConfig({ ...config, hostUrl: e.target.value })}
               style={{ width: '100%', padding: '10px', borderRadius: '6px', border: '1px solid #cbd5e1', fontSize: '0.875rem' }}
             />
-            <p id="ollama-endpoint-help" style={{ color: '#64748b', fontSize: '0.75rem', marginTop: '4px' }}>
-              Remote model endpoints are not allowed.
-            </p>
           </div>
 
           <div>

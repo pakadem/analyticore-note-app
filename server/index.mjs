@@ -287,6 +287,15 @@ app.put('/api/documents/:id', async (request, response, next) => {
   }
 });
 
+app.delete('/api/documents/:id', async (request, response, next) => {
+  try {
+    await pool.execute('DELETE FROM documents WHERE id = ?', [request.params.id]);
+    response.status(204).end();
+  } catch (error) {
+    next(error);
+  }
+});
+
 if (existsSync(path.join(projectRoot, 'dist', 'index.html'))) {
   app.use(express.static(path.join(projectRoot, 'dist')));
   app.get('/{*path}', (_request, response) => {

@@ -181,6 +181,13 @@ export const saveStoredDocument = async (document: KnowledgeDocument): Promise<v
   await updateDocument(document);
 };
 
+export const deleteStoredDocument = async (documentId: string): Promise<void> => {
+  await requestJson<void>(`/api/documents/${encodeURIComponent(documentId)}`, {
+    method: 'DELETE',
+  });
+  persistedDocumentIds.delete(documentId);
+};
+
 export const getDocumentStorageError = (error: unknown): string => {
   if (error instanceof Error) return error.message;
   return 'An unknown error prevented access to saved documents.';

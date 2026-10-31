@@ -1,0 +1,393 @@
+@startuml AnalytiCore_Prototype_Class_Diagram
+title AnalytiCore Note App — Main Prototype Classes
+skinparam classAttributeIconSize 0
+skinparam classFontSize 12
+skinparam packageStyle rectangle
+hide empty members
+skinparam linetype ortho
+
+' ========== Domain / UI state types ==========
+package "Domain types (src/types/app.ts)" {
+  enum NavTab {
+    home
+    upload
+    api
+  }
+
+  class NavigationItem {
+    +id: NavTab
+    +label: string
+    +description: string
+    +iconKey: string
+  }
+
+  class DocumentFile {
+    +id: string
+    +name: string
+    +size: number
+    +type: string
+    +uploadDate: Date
+    +status: indexing | ready | error
+    +tokenCount: number?
+    +error: string?
+    +hasFile: boolean?
+  }
+
+  class KnowledgeDocument {
+    +content: string
+    +file: Blob?
+    +persistenceError: string?
+    +analyticsError: string?
+    +pdfTextExtractionVersion: number?
+  }
+
+  class ChatMessage {
+    +id: string
+    +role: user | assistant | system | tool
+    +content: string
+    +timestamp: Date
+    +isStreaming: boolean?
+    +toolCalls: ToolCall[]?
+  }
+
+  class ToolCall {
+    +id: string
+    +name: string
+    +args: Map
+  }
+
+  class ApiConfig {
+    +hostUrl: string
+    +modelName: string
+    +temperature: number
+    +contextWindow: number
+    +isConnected: boolean
+  }
+
+  class DashboardMetric {
+    +title: string
+    +value: string | number
+    +change: string
+    +description: string
+  }
+
+  DocumentFile <|-- KnowledgeDocument : extends
+  NavigationItem --> NavTab : id
+  ChatMessage "1" *-- "0..*" ToolCall : toolCalls
+}
+
+' ========== React presentation components ==========
+package "UI components (src/components)" {
+  class App {
+    -activeTab: NavTab
+    -documents: KnowledgeDocument[*]
+    -documentsLoaded: boolean
+    -storageError: string?
+    -apiConfig: ApiConfig
+    +persistDocument(document): KnowledgeDocument
+    +removeDocument(documentId): void
+  }
+
+  class Sidebar {
+    +activeTab: NavTab
+    +onSelectTab(tab): void
+  }
+
+  class HomePage {
+    +documents: KnowledgeDocument[*]
+    +onOpenIngestion(): void
+  }
+
+  class RetailCharts {
+    +dataset: TabularDataset
+  }
+
+  class DataUploadPage {
+    +documents: KnowledgeDocument[*]
+    +onDocumentsChange(docs): void
+    +onPersistDocument(document): KnowledgeDocument
+    +onDeleteDocument(documentId): void
+    +handleFileUpload(event): void
+    +handleDownload(document): void
+    +handleDelete(document): void
+  }
+
+  class ApiConnectionPage {
+    +config: ApiConfig
+    +onUpdateConfig(config): void
+  }
+
+  class AgentChatbox {
+    +apiConfig: ApiConfig
+    +documents: KnowledgeDocument[*]
+    -isOpen: boolean
+    -input: string
+    -messages: ChatMessage[*]
+    +handleSend(): void
+  }
+
+  App "1" *-- "1" Sidebar : composition
+  App "1" o-- "0..1" HomePage : activeTab = home
+  App "1" o-- "0..1" DataUploadPage : activeTab = upload
+  App "1" o-- "0..1" ApiConnectionPage : activeTab = api
+  App "1" *-- "1" AgentChatbox : floating chat
+  App "1" --> "0..*" KnowledgeDocument : documents
+  App "1" --> "1" ApiConfig : apiConfig
+  App "1" --> "1" NavTab : activeTab
+
+  Sidebar --> "3" NavigationItem : navItems
+  HomePage --> "0..*" KnowledgeDocument : documents
+  HomePage "1" *-- "0..1" RetailCharts : retail view
+  DataUploadPage --> "0..*" KnowledgeDocument : documents
+  ApiConnectionPage --> "1" ApiConfig : config
+  AgentChatbox --> "1" ApiConfig : apiConfig
+  AgentChatbox --> "0..*" KnowledgeDocument : documents
+  AgentChatbox "1" *-- "1..*" ChatMessage : messages
+}
+
+' ========== Analytics domain ==========
+package "Dataset analytics (src/utils/datasetAnalytics.ts)" {
+  class TabularDataset {
+    +id: string
+    +name: string
+    +headers: string[*]
+    +numericColumns: string[*]
+    +rows: Map[*]
+    +sourceCount: number?
+    +error: string?
+  }
+
+  class Cluster {
+    +id: number
+    +size: number
+    +examples: Map[*]
+  }
+
+  class ClassifiedRow {
+    +rowNumber: number
+    +clusterId: number
+    +values: Map
+  }
+
+  class ClusterAnalysis {
+    +clusters: Cluster[*]
+    +classifiedRows: ClassifiedRow[*]
+    +rowsAnalyzed: number
+    +rowsExcluded: number
+    +columns: string[*]
+    +error: string?
+  }
+
+  class RegressionPoint {
+    +x: number
+    +actual: number?
+    +fitted: number?
+    +forecast: number?
+  }
+
+  class RegressionAnalysis {
+    +points: RegressionPoint[*]
+    +predictions: {x, y}[*]
+    +rSquared: number
+    +rowsAnalyzed: number
+    +rowsExcluded: number
+    +error: string?
+  }
+
+  class LinearRegressionFit {
+    +slope: number
+    +intercept: number
+    +rSquared: number
+  }
+
+  class DatasetAnalyticsService <<utility>> {
+    +{static} getStructuredDatasets(documents): TabularDataset[*]
+    +{static} classifyRows(dataset): ClusterAnalysis
+    +{static} fitLinearRegression(points): LinearRegressionFit?
+    +{static} predictWithLinearRegression(dataset, target, feature): RegressionAnalysis
+    +{static} getCsvNumber(value): number?
+  }
+
+  DatasetAnalyticsService ..> KnowledgeDocument : reads
+  DatasetAnalyticsService ..> TabularDataset : builds
+  DatasetAnalyticsService ..> ClusterAnalysis : produces
+  DatasetAnalyticsService ..> RegressionAnalysis : produces
+  DatasetAnalyticsService ..> LinearRegressionFit : produces
+  ClusterAnalysis "1" *-- "0..*" Cluster
+  ClusterAnalysis "1" *-- "0..*" ClassifiedRow
+  RegressionAnalysis "1" *-- "0..*" RegressionPoint
+  ClassifiedRow --> Cluster : clusterId
+  HomePage ..> DatasetAnalyticsService : uses
+  HomePage --> "0..*" TabularDataset : datasets
+  RetailCharts --> "1" TabularDataset : dataset
+}
+
+package "Retail analytics (src/utils/retailAnalytics.ts)" {
+  enum TimeGrouping {
+    day
+    week
+    month
+  }
+
+  class RetailChartColumns {
+    +date: string
+    +amount: string
+    +item: string
+    +quantity: string
+    +customer: string
+  }
+
+  class VisitDay {
+    +day: string
+    +visits: number
+  }
+
+  class SpendPeriod {
+    +period: string
+    +spent: number
+    +cumulative: number
+  }
+
+  class PopularItem {
+    +item: string
+    +purchases: number
+  }
+
+  class ProductPriceObservation {
+    +date: string
+    +timestamp: number
+    +product: string
+    +price: number
+    +sourceIds: string[*]
+  }
+
+  class ProductPriceForecastPoint {
+    +date: string
+    +actual: number?
+    +fitted: number?
+    +forecast: number?
+  }
+
+  class ProductPriceForecast {
+    +points: ProductPriceForecastPoint[*]
+    +predictions: {date, price}[*]
+    +rSquared: number
+    +rowsAnalyzed: number
+    +sourceCount: number
+    +error: string?
+  }
+
+  class RetailAnalyticsService <<utility>> {
+    +{static} inferRetailColumns(headers): RetailChartColumns
+    +{static} combineRetailDatasets(datasets): TabularDataset?
+    +{static} getVisitDays(dataset, dateCol, customerCol?): VisitDay[*]
+    +{static} getSpendProgression(dataset, dateCol, amountCol, grouping): SpendPeriod[*]
+    +{static} getPopularItems(dataset, itemCol, quantityCol?): PopularItem[*]
+    +{static} getProductPriceHistory(datasets): ProductPriceObservation[*]
+    +{static} predictProductPrices(history, product): ProductPriceForecast
+  }
+
+  RetailAnalyticsService ..> TabularDataset : consumes
+  RetailAnalyticsService ..> RetailChartColumns : infers
+  RetailAnalyticsService ..> VisitDay : produces
+  RetailAnalyticsService ..> SpendPeriod : produces
+  RetailAnalyticsService ..> PopularItem : produces
+  RetailAnalyticsService ..> ProductPriceObservation : produces
+  RetailAnalyticsService ..> ProductPriceForecast : produces
+  ProductPriceForecast "1" *-- "0..*" ProductPriceForecastPoint
+  RetailCharts ..> RetailAnalyticsService : uses
+  RetailCharts --> TimeGrouping : grouping
+  HomePage ..> RetailAnalyticsService : uses
+}
+
+' ========== Ingestion & persistence ==========
+package "Document ingestion (src/utils/documentIngestion.ts)" {
+  class DocumentIngestionService <<utility>> {
+    +{static} MAX_DOCUMENT_SIZE: number
+    +{static} MAX_RETRIEVED_CHUNKS: number
+    +{static} PDF_TEXT_EXTRACTION_VERSION: number
+    +{static} isSupportedDocument(file): boolean
+    +{static} extractDocumentText(file): string
+    +{static} searchDocuments(documents, query): string
+  }
+
+  DocumentIngestionService ..> KnowledgeDocument : reads / chunks
+  DataUploadPage ..> DocumentIngestionService : extract
+  AgentChatbox ..> DocumentIngestionService : retrieve
+}
+
+package "Document storage (src/utils/documentStorage.ts)" {
+  class DocumentStorageService <<utility>> {
+    +{static} loadStoredDocuments(): KnowledgeDocument[*]
+    +{static} saveStoredDocument(document): void
+    +{static} deleteStoredDocument(documentId): void
+    +{static} getDocumentStorageError(error): string
+  }
+
+  DocumentStorageService ..> KnowledgeDocument : load / save / delete
+  App ..> DocumentStorageService : uses
+}
+
+package "Persistence API (server)" {
+  class DocumentRecord {
+    +id: CHAR(36) {PK}
+    +name: VARCHAR(255)
+    +size_bytes: BIGINT
+    +mime_type: VARCHAR(255)
+    +original_file: LONGBLOB?
+    +file_sha256: CHAR(64)?
+    +extracted_text: LONGTEXT
+    +upload_date: DATETIME
+    +status: indexing | ready | error
+    +token_count: INT?
+    +error_message: TEXT?
+    +pdf_text_extraction_version: INT?
+  }
+
+  class DocumentChunk {
+    +id: BIGINT {PK}
+    +document_id: CHAR(36) {FK}
+    +chunk_index: INT
+    +content: TEXT
+  }
+
+  class DocumentApi <<service>> {
+    +GET /api/health()
+    +GET /api/documents()
+    +GET /api/documents/:id/file()
+    +POST /api/documents()
+    +PUT /api/documents/:id()
+    +DELETE /api/documents/:id()
+  }
+
+  DocumentRecord "1" *-- "0..*" DocumentChunk : cascade delete
+  DocumentApi ..> DocumentRecord : CRUD
+  DocumentStorageService ..> DocumentApi : HTTP
+  KnowledgeDocument ..> DocumentRecord : persisted as
+}
+
+' ========== External emerging-tech dependency ==========
+package "External LLM" {
+  class OllamaClient <<external>> {
+    +host: string
+    +chat(model, messages, options): Response
+  }
+
+  AgentChatbox ..> OllamaClient : chat completion
+  OllamaClient ..> ApiConfig : host / model / options
+}
+
+note right of App
+  Root React controller: owns
+  NavTab, KnowledgeDocument[*],
+  and ApiConfig; composes pages
+  and the floating AgentChatbox.
+end note
+
+note bottom of OllamaClient
+  Emerging technology boundary:
+  Llama 3 (or selected model)
+  via Ollama JS SDK.
+end note
+
+@enduml

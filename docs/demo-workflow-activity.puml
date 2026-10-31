@@ -1,0 +1,170 @@
+@startuml AnalytiCore_Demo_Activity
+title AnalytiCore Note App — Demonstrated Workflow Activity Diagram
+skinparam ActivityBackgroundColor #F8FAFC
+skinparam ActivityBorderColor #334155
+skinparam ActivityDiamondBackgroundColor #FEF3C7
+skinparam ActivityDiamondBorderColor #D97706
+skinparam NoteBackgroundColor #EFF6FF
+skinparam NoteBorderColor #2563EB
+
+|Local User|
+start
+:Open AnalytiCore app\n(http://localhost:3000);
+
+|AnalytiCore App|
+:Restore documents from\nMySQL on startup;
+
+if (MySQL storage available?) then (yes)
+  :Load documents,\nchunks & original files;
+else (no)
+  :Show storage warning;\nContinue with empty / in-memory state;
+endif
+
+|Local User|
+:Choose starting view;
+
+if (Which demo path?) then (API & Model Setup)
+  |Local User|
+  :Set Ollama endpoint,\nmodel, temperature &\ncontext window;
+  note right
+    Optional but required
+    before a successful
+    agent answer.
+  end note
+  |Local User|
+  :Return to main workflow;
+
+elseif (Dashboard & Analytics) then
+  |AnalytiCore App|
+  :Compute upload / table metrics;
+  if (Structured table detected\nin ready uploads?) then (yes)
+    :Render retail charts\n(visits, spend, popular items);
+    :Offer K-means clustering &\nlinear regression on selected dataset;
+    if (Dated product-price history\nhas ≥ 3 observations?) then (yes)
+      :Show product price forecast;
+    else (no)
+      :Show forecast unavailable message;
+    endif
+  else (no / narrative only)
+    :Prompt user to upload\nstructured CSV / TXT / PDF table;
+    note right
+      Narrative files stay
+      usable by the agent but
+      cannot drive charts.
+    end note
+  endif
+  |Local User|
+  :Optionally open chat or\ngo to Data Ingestion;
+
+else (Data Ingestion / Chat)
+endif
+
+' ===== Data ingestion branch =====
+|Local User|
+:Upload PDF / CSV / TXT file;
+
+|AnalytiCore App|
+if (Supported type &\nsize ≤ 50 MB?) then (no)
+  :Mark document status = error\n(unsupported type or oversize);
+  stop
+else (yes)
+  :Persist metadata + original file\nto MySQL (status = indexing);
+  :Extract selectable text locally;
+  if (Readable text extracted?) then (no)
+    :Mark status = error\n(empty / unreadable;\nscanned PDF without OCR fails);
+    :Persist error state to MySQL;
+    stop
+  else (yes)
+    :Mark status = ready;\nChunk text & save to MySQL;
+  endif
+endif
+
+|Local User|
+:Choose next demonstration step;
+
+if (Continue with?) then (Analytics)
+  |AnalytiCore App|
+  :Refresh dashboard metrics &\ncharts from ready documents;
+  |Local User|
+  :Inspect charts / ML outputs;
+
+elseif (Manage files) then
+  |Local User|
+  if (Download or Delete?) then (Download)
+    |AnalytiCore App|
+    :Serve original file from\nmemory or MySQL API;
+  else (Delete)
+    |AnalytiCore App|
+    :Delete document + chunks\nfrom MySQL (cascade);
+  endif
+
+else (Ask Business Analyst agent)
+endif
+
+' ===== Agent Q&A with emerging technology =====
+|Local User|
+:Open floating chat &\nenter business question;
+
+|AnalytiCore App|
+if (Question empty?) then (yes)
+  stop
+else (no)
+endif
+
+if (Looks like a follow-up?\nshort text or cue words) then (yes)
+  :Build retrieval query from\nprevious + current question;
+else (no)
+  :Use current question\nas retrieval query;
+endif
+
+:Filter ready documents &\nsplit into text chunks;
+:Score chunks by keyword match\n(local retrieval, not embeddings);
+
+if (Keyword matches found?) then (yes)
+  :Take top ≤ 5 matching chunks;
+else (no / no ready docs)
+  :Use representative excerpts\nfrom imported files (if any);
+endif
+
+if (Structured tables present?) then (yes)
+  :Compute local aggregates\n(row counts, sums, averages,\nranges, category values);
+  :Attach aggregates +\nrepresentative rows to context;
+else (no)
+  :Proceed with text excerpts only;
+endif
+
+partition "**Emerging technology**\nLocal generative LLM (Llama 3 via Ollama)" {
+  |Ollama / Llama 3|
+  :Send conversation history +\nquestion + retrieved excerpts\nto configured Ollama endpoint;
+  note right
+    Emerging / prototype AI step:
+    local Llama 3 (or selected model)
+    generates the analyst answer.
+    No DB, shell, or tool calling.
+  end note
+
+  if (Endpoint reachable &\nmodel returns content?) then (yes)
+    :Return generated answer;
+  else (no / empty / unreachable)
+    :Return endpoint / model\nerror message to chat UI;
+  endif
+}
+
+|AnalytiCore App|
+:Display assistant reply\nin chat history;
+
+|Local User|
+:Review answer;\noptionally ask follow-up\nor return to analytics / upload;
+
+stop
+
+legend right
+  |= Path |= Meaning |
+  | Happy path | Upload → ready → retrieve → **Llama 3** → answer |
+  | Alt: validation fail | Unsupported type / >50 MB / no text → error |
+  | Alt: no keyword hits | Representative excerpts (or empty context) |
+  | Alt: Ollama fail | User-visible connectivity / empty-response error |
+  | Alt: no structured table | Charts/ML skipped; chat still possible |
+endlegend
+
+@enduml

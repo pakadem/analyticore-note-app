@@ -1,0 +1,189 @@
+@startuml AnalytiCore_Demo_Sequence
+title AnalytiCore Note App — UI, Application Logic, Data Service & Emerging Technology
+skinparam responseMessageBelowArrow true
+skinparam maxMessageSize 220
+skinparam sequenceMessageAlign center
+skinparam BoxPadding 10
+
+actor "Local User" as User
+
+box "User Interface" #E0F2FE
+  participant "UI\n(Sidebar / Pages /\nAgentChatbox)" as UI
+end box
+
+box "Application Logic" #FEF3C7
+  participant "App\n(state & orchestration)" as App
+  participant "DocumentIngestion\n(extract + retrieve)" as Ingest
+  participant "Analytics\n(dataset / retail)" as Analytics
+end box
+
+box "Data Service" #DCFCE7
+  participant "DocumentStorage\n(client API)" as Storage
+  participant "Document API\n+ MySQL" as API
+end box
+
+box "Emerging Technology" #F3E8FF
+  participant "Ollama\n(Llama 3 LLM)" as Ollama
+end box
+
+== 1. Application start — restore knowledge base ==
+
+User -> UI : Open http://localhost:3000
+activate UI
+UI -> App : mount / initialise
+activate App
+App -> Storage : loadStoredDocuments()
+activate Storage
+Storage -> API : GET /api/documents
+activate API
+API --> Storage : document metadata + extracted text
+deactivate API
+Storage --> App : KnowledgeDocument[0..*]
+deactivate Storage
+App --> UI : documentsLoaded = true\nrender pages + chat
+deactivate App
+UI --> User : Dashboard / Ingestion / API Setup\n+ floating Business Analyst chat
+deactivate UI
+
+== 2. Optional — configure emerging-technology endpoint ==
+
+User -> UI : API & Model Setup\n(host, model, temperature, context)
+activate UI
+UI -> App : onUpdateConfig(ApiConfig)
+activate App
+App --> UI : apiConfig updated\n(passed to AgentChatbox)
+deactivate App
+deactivate UI
+
+== 3. Data ingestion — persist business files ==
+
+User -> UI : Upload PDF / CSV / TXT\n(Data Ingestion page)
+activate UI
+UI -> App : onDocumentsChange(indexing doc)
+activate App
+App --> UI : show indexing status
+
+UI -> Ingest : isSupportedDocument(file)\n+ size ≤ 50 MB?
+activate Ingest
+alt Unsupported type or file > 50 MB
+  Ingest --> UI : validation error
+  UI -> App : status = error
+  App --> UI : show error on document list
+else Valid file
+  Ingest --> UI : accepted
+  deactivate Ingest
+
+  UI -> App : onPersistDocument(document)
+  App -> Storage : saveStoredDocument(document)
+  activate Storage
+  Storage -> API : POST /api/documents\n(metadata + original file)
+  activate API
+  API --> Storage : 201 created
+  deactivate API
+  Storage --> App : persisted
+  deactivate Storage
+
+  UI -> Ingest : extractDocumentText(file)
+  activate Ingest
+  alt No readable text (e.g. scanned PDF)
+    Ingest --> UI : empty / extract failure
+    UI -> App : onPersistDocument(status = error)
+    App -> Storage : saveStoredDocument(error)
+    activate Storage
+    Storage -> API : PUT /api/documents/:id
+    activate API
+    API --> Storage : updated
+    deactivate API
+    Storage --> App
+    deactivate Storage
+    App --> UI : show extract error
+  else Text extracted
+    Ingest --> UI : content + tokenCount
+    deactivate Ingest
+    UI -> App : onPersistDocument(status = ready)
+    App -> Storage : saveStoredDocument(ready + content)
+    activate Storage
+    Storage -> API : PUT /api/documents/:id\n(+ replace document_chunks)
+    activate API
+    API --> Storage : updated
+    deactivate API
+    Storage --> App
+    deactivate Storage
+    App --> UI : document ready for analytics & chat
+  end
+end
+deactivate App
+deactivate UI
+
+== 4. Dashboard analytics (application logic only) ==
+
+User -> UI : Open Dashboard & Analytics
+activate UI
+UI -> App : documents prop
+activate App
+App -> Analytics : getStructuredDatasets(documents)\ncombineRetailDatasets / classifyRows /\npredictWithLinearRegression / predictProductPrices
+activate Analytics
+Analytics --> App : metrics, charts, clusters, forecasts
+deactivate Analytics
+App --> UI : render HomePage / RetailCharts
+deactivate App
+UI --> User : live metrics & ML visualisations
+deactivate UI
+
+== 5. Agent Q&A — retrieval + emerging technology ==
+
+User -> UI : Ask question in\nAnalytiCore Business Analyst chat
+activate UI
+UI -> UI : append ChatMessage(role = user)
+
+UI -> Ingest : searchDocuments(documents, retrievalQuery)
+activate Ingest
+note right of Ingest
+  Follow-up? merge previous + current
+  Keyword score chunks (max 5)
+  else representative excerpts
+  Attach local table aggregates if present
+end note
+Ingest --> UI : retrievedContext string
+deactivate Ingest
+
+UI -> Ollama : chat({\n  model, messages = history +\n  question + retrieved excerpts,\n  temperature, num_ctx\n})
+activate Ollama
+note right of Ollama
+  Emerging technology step:
+  local Llama 3 (or selected model)
+  generates the analyst answer.
+  No DB / shell tools exposed.
+end note
+
+alt Endpoint reachable and non-empty answer
+  Ollama --> UI : assistant message content
+  UI -> UI : append ChatMessage(role = assistant)
+  UI --> User : display generated answer
+else Unreachable endpoint / empty response / model error
+  Ollama --> UI : error / empty
+  UI -> UI : append error ChatMessage
+  UI --> User : show Ollama connectivity /\nmodel error guidance
+end
+deactivate Ollama
+deactivate UI
+
+== 6. Optional — delete stored knowledge ==
+
+User -> UI : Delete upload
+activate UI
+UI -> App : onDeleteDocument(documentId)
+activate App
+App -> Storage : deleteStoredDocument(id)
+activate Storage
+Storage -> API : DELETE /api/documents/:id
+activate API
+API --> Storage : cascade-delete chunks + file
+deactivate API
+Storage --> App
+deactivate Storage
+App --> UI : documents list updated
+deactivate App
+deactivate UI
+
+@enduml
