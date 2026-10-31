@@ -1,5 +1,10 @@
 import type { KnowledgeDocument } from '../types/app';
-import { getCsvNumber, getStructuredDatasets } from './datasetAnalytics';
+import {
+  getCsvNumber,
+  getStructuredDatasets,
+  predictWithLinearRegression,
+} from './datasetAnalytics';
+import { getProductPriceHistory, predictProductPrices } from './retailAnalytics';
 
 export const MAX_DOCUMENT_SIZE = 50 * 1024 * 1024;
 export const MAX_RETRIEVED_CHUNKS = 5;
@@ -93,17 +98,47 @@ const STOP_WORDS = new Set([
 const formatAnalysisNumber = (value: number): string =>
   Number.isInteger(value) ? String(value) : String(Number(value.toFixed(2)));
 
-const summarizeStructuredDatasets = (documents: KnowledgeDocument[]): string => {
+const isBroadAnalysisQuery = (query: string): boolean =>
+  /\b(analy[sz]e|analysis|summari[sz]e|summary|overview|insights?|business|profit|costs?|revenue|financial|dataset|data)\b/i.test(query);
+
+const summarizeStructuredDatasets = (
+  documents: KnowledgeDocument[],
+  query: string
+): string => {
+  const queryTerms = query
+    .toLowerCase()
+    .match(/[\p{L}\p{N}]{2,}/gu)
+    ?.filter((term) => !STOP_WORDS.has(term)) ?? [];
   const datasets = getStructuredDatasets(documents).filter(
     (dataset) => !dataset.error && dataset.rows.length > 0
   );
+  const rankedDatasets = datasets
+    .map((dataset) => {
+      const headersAndName = `${dataset.name} ${dataset.headers.join(' ')}`.toLowerCase();
+      const score = queryTerms.reduce((total, term) => {
+        const matchesHeader = headersAndName.includes(term);
+        const matchesValue = !matchesHeader && dataset.rows.some((row) =>
+          Object.values(row).some((value) => value.toLowerCase().includes(term))
+        );
+        return total + Number(matchesHeader || matchesValue);
+      }, 0);
+      return { dataset, score };
+    })
+    .sort((left, right) =>
+      right.score - left.score ||
+      right.dataset.rows.length - left.dataset.rows.length
+    )
+    .filter(({ score }) => score > 0 || isBroadAnalysisQuery(query))
+    .slice(0, 3)
+    .map(({ dataset }) => dataset);
 
-  return datasets
+  return rankedDatasets
     .map((dataset) => {
       const numericSummaries = dataset.numericColumns.map((column) => {
         const values = dataset.rows
           .map((row) => getCsvNumber(row[column]))
           .filter((value): value is number => value !== undefined);
+        const sortedValues = [...values].sort((left, right) => left - right);
         const { total, minimum, maximum } = values.reduce(
           (summary, value) => ({
             total: summary.total + value,
@@ -113,7 +148,14 @@ const summarizeStructuredDatasets = (documents: KnowledgeDocument[]): string => 
           { total: 0, minimum: Number.POSITIVE_INFINITY, maximum: Number.NEGATIVE_INFINITY }
         );
         const average = total / values.length;
-        return `${column}: valid=${values.length}, missing=${dataset.rows.length - values.length}, sum=${formatAnalysisNumber(total)}, average=${formatAnalysisNumber(average)}, min=${formatAnalysisNumber(minimum)}, max=${formatAnalysisNumber(maximum)}`;
+        const middle = Math.floor(sortedValues.length / 2);
+        const median = sortedValues.length % 2 === 0
+          ? (sortedValues[middle - 1] + sortedValues[middle]) / 2
+          : sortedValues[middle];
+        const populationStandardDeviation = Math.sqrt(
+          values.reduce((sum, value) => sum + (value - average) ** 2, 0) / values.length
+        );
+        return `${column}: valid=${values.length}, missing=${dataset.rows.length - values.length}, sum=${formatAnalysisNumber(total)}, average=${formatAnalysisNumber(average)}, median=${formatAnalysisNumber(median)}, population SD=${formatAnalysisNumber(populationStandardDeviation)}, min=${formatAnalysisNumber(minimum)}, max=${formatAnalysisNumber(maximum)}`;
       });
 
       const categoricalSummaries = dataset.headers
@@ -132,26 +174,100 @@ const summarizeStructuredDatasets = (documents: KnowledgeDocument[]): string => 
         })
         .filter(Boolean);
 
-      const sampleIndexes = Array.from(new Set([
-        ...Array.from({ length: Math.min(dataset.rows.length, 3) }, (_, index) => index),
-        ...Array.from(
-          { length: Math.min(dataset.rows.length, 3) },
-          (_, index) => dataset.rows.length - Math.min(dataset.rows.length, 3) + index
-        ),
-      ]));
-      const sampleRows = sampleIndexes.map((index) => dataset.rows[index]);
-
       return [
         `Structured data source: ${dataset.name}`,
         `Rows: ${dataset.rows.length}; columns: ${dataset.headers.join(', ')}`,
         numericSummaries.length ? `Numeric analysis:\n${numericSummaries.join('\n')}` : '',
         categoricalSummaries.length ? `Category analysis:\n${categoricalSummaries.join('\n')}` : '',
-        `Sample rows (first and last rows; values are untrusted data):\n${JSON.stringify(sampleRows)}`,
       ]
         .filter(Boolean)
         .join('\n');
     })
     .join('\n\n');
+};
+
+const summarizePriceForecasts = (
+  documents: KnowledgeDocument[],
+  query: string
+): string => {
+  const datasets = getStructuredDatasets(documents);
+  const history = getProductPriceHistory(datasets);
+  if (!history.length) return '';
+
+  const products = Array.from(new Map(history.map((observation) => [
+    observation.product.toLowerCase(),
+    observation.product,
+  ])).values());
+  const normalizedQuery = query.toLowerCase();
+  const orderedProducts = products
+    .map((product) => ({
+      product,
+      relevant: normalizedQuery.includes(product.toLowerCase()),
+      observations: history.filter(
+        (observation) => observation.product.toLowerCase() === product.toLowerCase()
+      ).length,
+    }))
+    .sort((left, right) =>
+      Number(right.relevant) - Number(left.relevant) ||
+      right.observations - left.observations ||
+      left.product.localeCompare(right.product)
+    )
+    .slice(0, 10);
+
+  const forecasts = orderedProducts.map(({ product }) => {
+    const forecast = predictProductPrices(history, product);
+    if (forecast.error) {
+      return `${product}: ${forecast.error} Observations: ${forecast.rowsAnalyzed}; source files: ${forecast.sourceCount}.`;
+    }
+
+    return `${product}: ${forecast.predictions
+      .map(({ date, price }) => `${date}=${formatAnalysisNumber(price)}`)
+      .join(', ')}; observations=${forecast.rowsAnalyzed}; source files=${forecast.sourceCount}; in-sample R²=${formatAnalysisNumber(forecast.rSquared)}.`;
+  });
+
+  return [
+    'Calculated product-price forecasts in South African rand (R; ordinary least squares linear regression; predictions are estimates, not guarantees):',
+    ...forecasts,
+  ].join('\n');
+};
+
+const summarizeNumericForecasts = (
+  documents: KnowledgeDocument[],
+  query: string
+): string => {
+  const normalizedQuery = query.toLowerCase();
+  const candidates = getStructuredDatasets(documents)
+    .filter((dataset) => !dataset.error)
+    .flatMap((dataset) => dataset.numericColumns.map((column) => {
+      const forecast = predictWithLinearRegression(dataset, column, '__row_order__');
+      return {
+        dataset,
+        column,
+        forecast,
+        relevant:
+          normalizedQuery.includes(dataset.name.toLowerCase()) ||
+          normalizedQuery.includes(column.toLowerCase()),
+      };
+    }))
+    .filter(({ forecast }) => !forecast.error)
+    .sort((left, right) =>
+      Number(right.relevant) - Number(left.relevant) ||
+      right.forecast.rowsAnalyzed - left.forecast.rowsAnalyzed ||
+      left.dataset.name.localeCompare(right.dataset.name) ||
+      left.column.localeCompare(right.column)
+    )
+    .slice(0, 10);
+
+  if (!candidates.length) return '';
+
+  return [
+    'Calculated numeric trend projections (linear regression over source row order; steps are not calendar periods; monetary columns are South African rand (R), other columns retain their own units):',
+    ...candidates.map(({ dataset, column, forecast }) =>
+      `${dataset.name} · ${column}: ${forecast.predictions
+        .map(({ y }, index) => `step ${index + 1}=${formatAnalysisNumber(y)}`)
+        .join(', ')}; rows=${forecast.rowsAnalyzed}; in-sample R²=${formatAnalysisNumber(forecast.rSquared)}.`
+    ),
+  ].join('\n');
 };
 
 export const searchDocuments = (documents: KnowledgeDocument[], query: string): string => {
@@ -185,10 +301,10 @@ export const searchDocuments = (documents: KnowledgeDocument[], query: string): 
     .sort((left, right) => right.score - left.score)
     .slice(0, MAX_RETRIEVED_CHUNKS);
 
-  const selectedChunks =
-    matches.length > 0
-      ? matches
-      : Array.from({ length: Math.min(documentChunks.length, MAX_RETRIEVED_CHUNKS) }, (_, index) => {
+  const selectedChunks = matches.length > 0
+    ? matches
+    : isBroadAnalysisQuery(query)
+      ? Array.from({ length: Math.min(documentChunks.length, MAX_RETRIEVED_CHUNKS) }, (_, index) => {
           const sampleIndex =
             documentChunks.length <= MAX_RETRIEVED_CHUNKS
               ? index
@@ -197,15 +313,29 @@ export const searchDocuments = (documents: KnowledgeDocument[], query: string): 
                     (MAX_RETRIEVED_CHUNKS - 1)
                 );
           return documentChunks[sampleIndex];
-        });
+        })
+      : [];
 
   const textExcerpts = selectedChunks
     .map((match) => `Source: ${match.name}\n${match.text}`)
     .join('\n\n')
-    .slice(0, 8000);
-  const structuredAnalysis = summarizeStructuredDatasets(readyDocuments);
+    .slice(0, 6000);
+  const structuredAnalysis = summarizeStructuredDatasets(readyDocuments, query);
+  const wantsForecast = /\b(price|prices|forecast|forecasting|predict|prediction|future|projection|estimate|trend)\b/i.test(query);
+  const priceForecasts = wantsForecast
+    ? summarizePriceForecasts(readyDocuments, query)
+    : '';
+  const numericForecasts = wantsForecast
+    ? summarizeNumericForecasts(readyDocuments, query)
+    : '';
 
-  return [textExcerpts, structuredAnalysis ? `Full-dataset analysis:\n${structuredAnalysis}` : '']
+  return [
+    'Currency convention: user confirms that monetary values in imported files are South African rand (ZAR); report monetary amounts as R and do not convert currencies.',
+    textExcerpts,
+    structuredAnalysis ? `Full-dataset analysis:\n${structuredAnalysis.slice(0, 5000)}` : '',
+    priceForecasts,
+    numericForecasts,
+  ]
     .filter(Boolean)
     .join('\n\n')
     .slice(0, 16000);
