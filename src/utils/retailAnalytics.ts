@@ -130,12 +130,19 @@ export const getProductPriceHistory = (
     if (dataset.error) return;
     const columns = inferRetailColumns(dataset.headers);
     const priceColumn = inferPriceColumn(dataset.headers);
-    if (!columns.date || !columns.item || !priceColumn) return;
+    if (!columns.date || !columns.item) return;
 
     dataset.rows.forEach((row) => {
       const date = parseDate(row[columns.date]);
       const product = row[columns.item]?.trim();
-      const price = getCsvNumber(row[priceColumn]);
+      let price = priceColumn ? getCsvNumber(row[priceColumn]) : undefined;
+      if (price === undefined && columns.amount && columns.amount !== priceColumn && columns.quantity) {
+        const lineTotal = getCsvNumber(row[columns.amount]);
+        const quantity = getCsvNumber(row[columns.quantity]);
+        if (lineTotal !== undefined && quantity !== undefined && quantity > 0) {
+          price = lineTotal / quantity;
+        }
+      }
       if (!date || !product || price === undefined) return;
 
       const dateKey = getDateKey(date);
