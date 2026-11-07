@@ -34,6 +34,86 @@ export const DataUploadPage: React.FC<DataUploadPageProps> = ({
   const [downloadError, setDownloadError] = React.useState<string | null>(null);
   const [deleteError, setDeleteError] = React.useState<string | null>(null);
   const [deletingDocumentIds, setDeletingDocumentIds] = React.useState<Set<string>>(new Set());
+  const [viewingDocument, setViewingDocument] = React.useState<KnowledgeDocument | null>(null);
+  const [previewState, setPreviewState] = React.useState<{
+    documentId: string;
+    content: string;
+    loading: boolean;
+    error?: string;
+  } | null>(null);
+  const previewRequestId = React.useRef(0);
+
+  const closePreview = React.useCallback(() => {
+    previewRequestId.current += 1;
+    setViewingDocument(null);
+    setPreviewState(null);
+  }, []);
+
+  React.useEffect(() => {
+    if (!viewingDocument) return;
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') closePreview();
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [viewingDocument, closePreview]);
+
+  const handleView = async (document: KnowledgeDocument) => {
+    setViewingDocument(document);
+
+    if (document.content) {
+      setPreviewState({ documentId: document.id, content: document.content, loading: false });
+      return;
+    }
+
+    if (document.status === 'indexing') {
+      setPreviewState({ documentId: document.id, content: '', loading: false });
+      return;
+    }
+
+    const requestId = ++previewRequestId.current;
+    setPreviewState({ documentId: document.id, content: '', loading: true });
+
+    try {
+      let fileBlob = document.file;
+      if (!fileBlob && document.hasFile) {
+        const response = await fetch(`/api/documents/${encodeURIComponent(document.id)}/file`);
+        if (!response.ok) {
+          const result: unknown = await response.json().catch(() => null);
+          const message =
+            typeof result === 'object' &&
+            result !== null &&
+            'error' in result &&
+            typeof result.error === 'string'
+              ? result.error
+              : `Unable to open the stored file (HTTP ${response.status}).`;
+          throw new Error(message);
+        }
+        fileBlob = await response.blob();
+      }
+
+      if (!fileBlob) {
+        throw new Error(document.error ?? 'No readable text or original file is available.');
+      }
+
+      const file = new File([fileBlob], document.name, { type: document.type });
+      const content = await extractDocumentText(file);
+      if (requestId === previewRequestId.current) {
+        setPreviewState({ documentId: document.id, content, loading: false });
+      }
+    } catch (error) {
+      if (requestId === previewRequestId.current) {
+        setPreviewState({
+          documentId: document.id,
+          content: '',
+          loading: false,
+          error: error instanceof Error ? error.message : 'Unable to read this document.',
+        });
+      }
+    }
+  };
 
   const handleDownload = async (document: KnowledgeDocument) => {
     try {
@@ -288,6 +368,21 @@ export const DataUploadPage: React.FC<DataUploadPageProps> = ({
                   <td style={{ padding: '12px 8px' }}>
                     <button
                       type="button"
+                      onClick={() => void handleView(doc)}
+                      style={{
+                        padding: '6px 10px',
+                        backgroundColor: '#f1f5f9',
+                        color: '#334155',
+                        border: 0,
+                        borderRadius: '6px',
+                        cursor: 'pointer',
+                        marginRight: '6px',
+                      }}
+                    >
+                      View
+                    </button>
+                    <button
+                      type="button"
                       onClick={() => void handleDelete(doc)}
                       disabled={doc.status === 'indexing' || deletingDocumentIds.has(doc.id)}
                       aria-label={`Delete ${doc.name}`}
@@ -312,6 +407,110 @@ export const DataUploadPage: React.FC<DataUploadPageProps> = ({
           </tbody>
         </table>
       </div>
+
+      {viewingDocument && (
+        <div
+          onClick={(event) => {
+            if (event.target === event.currentTarget) closePreview();
+          }}
+          style={{
+            position: 'fixed',
+            inset: 0,
+            zIndex: 1000,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            padding: '24px',
+            backgroundColor: 'rgba(15, 23, 42, 0.6)',
+          }}
+        >
+          <section
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="document-preview-title"
+            aria-describedby="document-preview-content"
+            style={{
+              display: 'flex',
+              flexDirection: 'column',
+              width: 'min(900px, 100%)',
+              maxHeight: 'min(80vh, 900px)',
+              backgroundColor: '#ffffff',
+              borderRadius: '12px',
+              boxShadow: '0 20px 50px rgba(0, 0, 0, 0.25)',
+              overflow: 'hidden',
+            }}
+          >
+            <header
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                gap: '16px',
+                padding: '16px 20px',
+                borderBottom: '1px solid #e2e8f0',
+              }}
+            >
+              <div style={{ minWidth: 0 }}>
+                <h2
+                  id="document-preview-title"
+                  style={{ margin: 0, fontSize: '1.125rem', fontWeight: 'bold', overflowWrap: 'anywhere' }}
+                >
+                  {viewingDocument.name}
+                </h2>
+                <p style={{ margin: '4px 0 0', color: '#64748b', fontSize: '0.8rem' }}>
+                  Extracted document contents
+                </p>
+              </div>
+              <button
+                type="button"
+                autoFocus
+                onClick={closePreview}
+                aria-label="Close document preview"
+                style={{
+                  flexShrink: 0,
+                  padding: '8px 12px',
+                  border: 0,
+                  borderRadius: '6px',
+                  backgroundColor: '#e2e8f0',
+                  color: '#0f172a',
+                  cursor: 'pointer',
+                }}
+              >
+                Close
+              </button>
+            </header>
+            <div
+              id="document-preview-content"
+              style={{ overflow: 'auto', padding: '20px', color: '#1e293b' }}
+            >
+              {previewState?.documentId === viewingDocument.id && previewState.loading ? (
+                <p role="status" style={{ margin: 0, color: '#64748b' }}>Loading document contents…</p>
+              ) : previewState?.documentId === viewingDocument.id && previewState.error ? (
+                <p role="alert" style={{ margin: 0, color: '#b91c1c' }}>{previewState.error}</p>
+              ) : previewState?.documentId === viewingDocument.id && previewState.content ? (
+                <pre
+                  style={{
+                    margin: 0,
+                    fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+                    fontSize: '0.85rem',
+                    lineHeight: 1.6,
+                    whiteSpace: 'pre-wrap',
+                    overflowWrap: 'anywhere',
+                  }}
+                >
+                  {previewState.content}
+                </pre>
+              ) : (
+                <p role="status" style={{ margin: 0, color: '#64748b' }}>
+                  {viewingDocument.status === 'indexing'
+                    ? 'This document is still being processed. Its contents will be available when ingestion finishes.'
+                    : viewingDocument.error ?? 'No readable text is available for this document.'}
+                </p>
+              )}
+            </div>
+          </section>
+        </div>
+      )}
     </div>
   );
 };
