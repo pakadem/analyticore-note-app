@@ -1,6 +1,6 @@
 # AnalytiCore: Llama 3 Agentic AI Note Application
 
-A modern, high-performance note application built with **React**, **TypeScript**, and **Vite**. The application connects to local **Llama 3 via Ollama** using the Ollama JavaScript SDK.
+A modern, high-performance note application built with **React**, **TypeScript**, and **Vite**. The application connects to **Llama 3 via Ollama** using the Ollama JavaScript SDK.
 
 ## Core Features
 1. **Left Navigation Sidebar**:
@@ -38,7 +38,7 @@ K-means classification and general linear regression run on the individually sel
 3. **Colima with Docker Compose**: Start Colima before running MySQL.
 4. **Ollama Service**:
    ```bash
-   # Download and start local Llama 3 model
+   # Download and start the default Llama 3 model
    ollama pull llama3:8b
    ollama serve
    ```

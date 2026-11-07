@@ -11,14 +11,14 @@ const navItems: NavigationItem[] = [
 interface SidebarProps {
   activeTab: NavTab;
   onSelectTab: (tab: NavTab) => void;
+  modelName: string;
 }
 
-export const Sidebar: React.FC<SidebarProps> = ({ activeTab, onSelectTab }) => {
+export const Sidebar: React.FC<SidebarProps> = ({ activeTab, onSelectTab, modelName }) => {
   return (
     <aside style={{ width: '280px', backgroundColor: '#0f172a', color: '#ffffff', padding: '24px', display: 'flex', flexDirection: 'column', gap: '24px', flexShrink: 0 }}>
       <div style={{ borderBottom: '1px solid #334155' }}>
         <img src={logoUrl} alt="AnalytiCore" style={{ width: '150px', margin: '0 auto',display: 'block', paddingBottom: '16px', height: 'auto' }} />
-        {/* <p style={{ fontSize: '0.75rem', color: '#94a3b8', marginTop: '4px' }}>Llama 3 Agentic Note Platform</p> */}
       </div>
       
 
@@ -54,7 +54,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ activeTab, onSelectTab }) => {
       </nav>
 
       <div style={{ marginTop: 'auto', padding: '12px', backgroundColor: '#1e293b', borderRadius: '8px', fontSize: '0.75rem', color: '#cbd5e1' }}>
-        <div>🤖 <strong>Engine:</strong> Llama 3 (8B)</div>
+        <div>🤖 <strong>Engine:</strong> {modelName}</div>
         <div style={{ marginTop: '4px' }}>⚡ <strong>Status:</strong> Agent Active</div>
       </div>
     </aside>

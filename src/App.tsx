@@ -65,7 +65,7 @@ export const App: React.FC = () => {
   return (
     <div style={{ display: 'flex', minHeight: '100vh', backgroundColor: '#f8fafc' }}>
       {/* Left Navigation Sidebar */}
-      <Sidebar activeTab={activeTab} onSelectTab={setActiveTab} />
+      <Sidebar activeTab={activeTab} onSelectTab={setActiveTab} modelName={apiConfig.modelName} />
 
       {/* Main Content Area */}
       <main style={{ flex: 1, padding: '32px', overflowY: 'auto' }}>
@@ -98,7 +98,13 @@ export const App: React.FC = () => {
       </main>
 
       {/* Floating Agentic AI Chatbox */}
-      {documentsLoaded && <AgentChatbox apiConfig={apiConfig} documents={documents} />}
+      {documentsLoaded && (
+        <AgentChatbox
+          apiConfig={apiConfig}
+          documents={documents}
+          onSelectTab={setActiveTab}
+        />
+      )}
     </div>
   );
 };
