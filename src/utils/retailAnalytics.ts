@@ -53,7 +53,7 @@ export interface ProductPriceForecast {
 
 const columnHints = {
   date: ['visit date', 'transaction date', 'purchase date', 'order date', 'sale date', 'date', 'timestamp', 'time'],
-  amount: ['total spend', 'total amount', 'amount spent', 'spend', 'total', 'amount', 'revenue', 'sales', 'price', 'cost'],
+  amount: ['total spend', 'total inc', 'total amount', 'amount spent', 'spend', 'total', 'amount', 'revenue', 'sales', 'price', 'cost'],
   item: ['product name', 'item name', 'product', 'item', 'sku', 'description'],
   quantity: ['quantity', 'qty', 'units', 'item count'],
   customer: ['customer id', 'client id', 'customer', 'client', 'member id', 'user id'],
@@ -130,10 +130,10 @@ export const getProductPriceHistory = (
     if (dataset.error) return;
     const columns = inferRetailColumns(dataset.headers);
     const priceColumn = inferPriceColumn(dataset.headers);
-    if (!columns.date || !columns.item) return;
+    if ((!columns.date && !dataset.invoiceDate) || !columns.item) return;
 
     dataset.rows.forEach((row) => {
-      const date = parseDate(row[columns.date]);
+      const date = parseDate(columns.date ? row[columns.date] : dataset.invoiceDate);
       const product = row[columns.item]?.trim();
       let price = priceColumn ? getCsvNumber(row[priceColumn]) : undefined;
       if (price === undefined && columns.amount && columns.amount !== priceColumn && columns.quantity) {
@@ -257,13 +257,13 @@ export const combineRetailDatasets = (datasets: TabularDataset[]): TabularDatase
   datasets.forEach((dataset) => {
     if (dataset.error) return;
     const columns = inferRetailColumns(dataset.headers);
-    if (!columns.date && !columns.amount && !columns.item) return;
+    if (!columns.date && !dataset.invoiceDate && !columns.amount && !columns.item) return;
 
     sourceCount += 1;
     dataset.rows.forEach((sourceRow) => {
       rows.push({
-        visit_date: columns.date ? sourceRow[columns.date] ?? '' : '',
-        customer_id: columns.customer ? sourceRow[columns.customer] ?? '' : '',
+        visit_date: columns.date ? sourceRow[columns.date] ?? '' : dataset.invoiceDate ?? '',
+        customer_id: columns.customer ? sourceRow[columns.customer] ?? '' : dataset.customerName ?? '',
         product: columns.item ? sourceRow[columns.item] ?? '' : '',
         quantity: columns.quantity ? sourceRow[columns.quantity] ?? '' : '',
         total_spend: columns.amount ? sourceRow[columns.amount] ?? '' : '',

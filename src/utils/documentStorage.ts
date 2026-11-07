@@ -1,5 +1,9 @@
 import type { KnowledgeDocument } from '../types/app';
-import { extractDocumentText, PDF_TEXT_EXTRACTION_VERSION } from './documentIngestion';
+import {
+  extractDocumentText,
+  PDF_TEXT_EXTRACTION_VERSION,
+  restructureMakroInvoiceText,
+} from './documentIngestion';
 
 const DATABASE_NAME = 'analyticore-document-store';
 const DATABASE_VERSION = 1;
@@ -143,8 +147,22 @@ export const loadStoredDocuments = async (): Promise<KnowledgeDocument[]> => {
       document.name.toLowerCase().endsWith('.pdf') &&
       document.hasFile &&
       document.status === 'ready' &&
-      (document.pdfTextExtractionVersion ?? 0) < PDF_TEXT_EXTRACTION_VERSION;
+      ((document.pdfTextExtractionVersion ?? 0) < PDF_TEXT_EXTRACTION_VERSION ||
+        !document.content.trim());
     if (!isOutdatedPdf) {
+      if (document.status === 'ready' && document.content) {
+        const restructured = restructureMakroInvoiceText(document.content);
+        if (restructured !== document.content) {
+          const updatedDocument: KnowledgeDocument = {
+            ...document,
+            content: restructured,
+            tokenCount: Math.ceil(restructured.length / 4),
+          };
+          await updateDocument(updatedDocument);
+          restoredDocuments.push(updatedDocument);
+          continue;
+        }
+      }
       restoredDocuments.push(document);
       continue;
     }
@@ -156,6 +174,7 @@ export const loadStoredDocuments = async (): Promise<KnowledgeDocument[]> => {
       const refreshedDocument: KnowledgeDocument = {
         ...document,
         content,
+        tokenCount: Math.ceil(content.length / 4),
         pdfTextExtractionVersion: PDF_TEXT_EXTRACTION_VERSION,
         analyticsError: undefined,
         persistenceError: undefined,

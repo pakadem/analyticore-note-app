@@ -1,4 +1,5 @@
 import type { KnowledgeDocument } from '../types/app';
+import { MAKRO_ITEM_HEADER, restructureMakroInvoiceText } from './documentIngestion';
 
 export interface TabularDataset {
   id: string;
@@ -7,6 +8,8 @@ export interface TabularDataset {
   numericColumns: string[];
   rows: Array<Record<string, string>>;
   sourceCount?: number;
+  invoiceDate?: string;
+  customerName?: string;
   error?: string;
 }
 
@@ -119,7 +122,7 @@ export const getCsvNumber = (value: string | undefined): number | undefined => {
   const trimmed = value.trim();
   if (!trimmed) return undefined;
 
-  const numericPattern = /^\(?\s*-?\s*[$€£]?\s*[\d,]+(?:\.\d+)?%?\s*\)?$/;
+  const numericPattern = /^\(?\s*-?\s*[$€£]?\s*[\d,]+(?:\s\d{3})*(?:\.\d+)?%?\s*\)?$/;
   if (!numericPattern.test(trimmed)) return undefined;
 
   const parenthesized = trimmed.startsWith('(') && trimmed.endsWith(')');
@@ -128,41 +131,87 @@ export const getCsvNumber = (value: string | undefined): number | undefined => {
   return parenthesized ? -Math.abs(parsed) : parsed;
 };
 
-const parseRetailInvoice = (content: string): Array<Record<string, string>> => {
-  const salesDate = content.match(
+const MAKRO_HEADERS = MAKRO_ITEM_HEADER.split(',').map((header) => header.trim());
+
+const parseRetailInvoice = (
+  content: string
+): {
+  headers: string[];
+  rows: Array<Record<string, string>>;
+  numericColumns: string[];
+  invoiceDate?: string;
+  customerName?: string;
+} | undefined => {
+  const normalizedContent = restructureMakroInvoiceText(content);
+  const salesDate = normalizedContent.match(
     /Sales Date\s*:\s*(?:[A-Za-z]{3,9}\s+)?(\d{1,2})\/(\d{1,2})\/(\d{4})/i
   );
-  if (!salesDate) return [];
+  const invoiceDate = salesDate
+    ? `${salesDate[3]}-${salesDate[2].padStart(2, '0')}-${salesDate[1].padStart(2, '0')}`
+    : undefined;
+  const customerName =
+    normalizedContent.match(/Customer Name\s*:\s*([^\t\r\n]+)/i)?.[1]?.trim() ?? undefined;
 
-  const [, day, month, year] = salesDate;
-  const date = `${year}-${month.padStart(2, '0')}-${day.padStart(2, '0')}`;
-  const customerName = content.match(/Customer Name\s*:\s*([^\t\r\n]+)/i)?.[1]?.trim() ?? '';
-  const lines = content.split(/\r?\n/);
+  const lines = normalizedContent.split(/\r?\n/);
   const rows: Array<Record<string, string>> = [];
+  let inMakroTable = false;
 
-  for (let index = 0; index < lines.length - 1; index += 1) {
-    const quantityLine = lines[index].trim().match(/^(\d+)[\t ]+(\d+)$/);
-    if (!quantityLine) continue;
+  for (const rawLine of lines) {
+    const trimmed = rawLine.trim();
+    if (!trimmed) continue;
 
-    const fields = lines[index + 1].split('\t').map((field) => field.trim()).filter(Boolean);
-    const barcodeAndItem = fields[0]?.match(/^(\d{8,})\s+(.+)$/);
-    if (!barcodeAndItem || fields.length < 3) continue;
+    if (trimmed === MAKRO_ITEM_HEADER) {
+      inMakroTable = true;
+      continue;
+    }
 
-    const amount = getCsvNumber(fields[fields.length - 1]?.split(/\s+/).pop());
-    if (amount === undefined) continue;
-    const quantity = Number(quantityLine[1]);
+    if (!inMakroTable) continue;
 
-    rows.push({
-      visit_date: date,
-      customer_id: customerName,
-      product: barcodeAndItem[2].trim(),
-      quantity: String(quantity),
-      total_spend: String(amount),
-      unit_price: quantity > 0 ? String(amount / quantity) : '',
-    });
+    if (
+      /^(TOTALS\b|Please Note\s*:|VAT SUMMARY\b|PAYMENT SUMMARY\b|Masstores\b)/i.test(trimmed)
+    ) {
+      inMakroTable = false;
+      continue;
+    }
+
+    let parsedRow: string[] | undefined;
+    try {
+      parsedRow = parseDelimitedRows(trimmed, ',')[0];
+    } catch {
+      parsedRow = undefined;
+    }
+
+    if (
+      parsedRow &&
+      parsedRow.length === MAKRO_HEADERS.length &&
+      /^\d+(?:\.\d+)?$/.test(parsedRow[0].trim()) &&
+      /^\d{8,}$/.test(parsedRow[1].trim())
+    ) {
+      rows.push(
+        Object.fromEntries(
+          MAKRO_HEADERS.map((header, index) => [header, parsedRow[index]?.trim() ?? ''])
+        )
+      );
+    }
   }
 
-  return rows;
+  if (!rows.length) return undefined;
+
+  const minNumericRows = Math.min(3, rows.length);
+  const numericColumns = MAKRO_HEADERS.filter(
+    (header) =>
+      header !== 'BARCODE' &&
+      header !== 'DIS' &&
+      rows.filter((row) => getCsvNumber(row[header]) !== undefined).length >= minNumericRows
+  );
+
+  return {
+    headers: MAKRO_HEADERS,
+    rows,
+    numericColumns,
+    invoiceDate,
+    customerName,
+  };
 };
 
 const detectDelimitedTable = (content: string): { delimiter: string; startLine: number } | undefined => {
@@ -213,16 +262,16 @@ export const getStructuredDatasets = (documents: KnowledgeDocument[]): TabularDa
         const isCsv =
           document.name.toLowerCase().endsWith('.csv') ||
           document.type.toLowerCase().includes('csv');
-        const isPdf = document.name.toLowerCase().endsWith('.pdf') ||
-          document.type.toLowerCase().includes('pdf');
-        const invoiceRows = isPdf ? parseRetailInvoice(document.content) : [];
-        if (invoiceRows.length) {
+        const invoiceDataset = parseRetailInvoice(document.content);
+        if (invoiceDataset) {
           return {
             id: document.id,
             name: document.name,
-            headers: ['visit_date', 'customer_id', 'product', 'quantity', 'total_spend', 'unit_price'],
-            rows: invoiceRows,
-            numericColumns: ['quantity', 'total_spend', 'unit_price'],
+            headers: invoiceDataset.headers,
+            rows: invoiceDataset.rows,
+            numericColumns: invoiceDataset.numericColumns,
+            invoiceDate: invoiceDataset.invoiceDate,
+            customerName: invoiceDataset.customerName,
           };
         }
 

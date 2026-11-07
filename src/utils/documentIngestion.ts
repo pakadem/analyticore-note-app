@@ -8,12 +8,210 @@ import { getProductPriceHistory, predictProductPrices } from './retailAnalytics'
 
 export const MAX_DOCUMENT_SIZE = 50 * 1024 * 1024;
 export const MAX_RETRIEVED_CHUNKS = 5;
-export const PDF_TEXT_EXTRACTION_VERSION = 2;
+export const PDF_TEXT_EXTRACTION_VERSION = 3;
+export const MAKRO_ITEM_HEADER =
+  'QTY, BARCODE, UNIT/PK, DESCRIPTION, WEIGHT (Kg), DIS, SGL INC, VAT, PK INC CODE, TOTAL EXC, TOTAL INC';
 const SUPPORTED_EXTENSIONS = new Set(['pdf', 'csv', 'txt']);
 
 export const isSupportedDocument = (file: File): boolean => {
   const extension = file.name.split('.').pop()?.toLowerCase();
   return extension !== undefined && SUPPORTED_EXTENSIONS.has(extension);
+};
+
+interface PdfPositionedItem {
+  x: number;
+  width: number;
+  text: string;
+}
+
+interface PdfTextLine {
+  y: number;
+  items: PdfPositionedItem[];
+}
+
+const formatMakroItemRow = (fields: {
+  qty: string;
+  barcode: string;
+  unitPk: string;
+  description: string;
+  weight?: string;
+  dis?: string;
+  sglInc: string;
+  vat: string;
+  pkIncCode: string;
+  totalExc: string;
+  totalInc: string;
+}): string => {
+  const escapedDescription = fields.description.trim().replace(/"/g, '""');
+  const weight = fields.weight?.trim() ?? '';
+  const dis = fields.dis?.trim() ?? '';
+  return `${fields.qty.trim()}, ${fields.barcode.trim()}, ${fields.unitPk.trim()}, "${escapedDescription}", ${weight},${dis || ' '},${fields.sglInc.trim()}, ${fields.vat.trim()}, ${fields.pkIncCode.trim()}, ${fields.totalExc.trim()}, ${fields.totalInc.trim()}`;
+};
+
+const formatPdfLine = (items: PdfPositionedItem[]): string =>
+  items.reduce((text, item, index) => {
+    if (index === 0) return item.text;
+    const previous = items[index - 1];
+    const gap = item.x - previous.x - previous.width;
+    return `${text}${gap > 18 ? '\t' : ' '}${item.text}`;
+  }, '');
+
+const formatPdfPageLines = (lines: PdfTextLine[]): string => {
+  const sortedLines = lines
+    .sort((left, right) => right.y - left.y)
+    .map((line) => ({
+      y: line.y,
+      items: [...line.items].sort((left, right) => left.x - right.x),
+    }));
+
+  const outputLines: string[] = [];
+  let inMakroItemTable = false;
+
+  for (let index = 0; index < sortedLines.length; index += 1) {
+    const current = sortedLines[index];
+    const next = sortedLines[index + 1];
+
+    const isMakroTopHeader =
+      current.items[0]?.text.trim() === 'QTY' &&
+      current.items.some((item) => item.text.trim() === 'UNIT/PK');
+    const isMakroBottomHeader =
+      next?.items[0]?.text.trim() === 'BARCODE' &&
+      next.items.some((item) => item.text.trim() === 'DESCRIPTION');
+
+    if (isMakroTopHeader && isMakroBottomHeader) {
+      outputLines.push(MAKRO_ITEM_HEADER);
+      inMakroItemTable = true;
+      index += 1;
+      continue;
+    }
+
+    if (inMakroItemTable) {
+      const firstToken = current.items[0]?.text.trim() ?? '';
+      if (
+        firstToken === 'TOTALS' ||
+        firstToken === 'Please Note :' ||
+        firstToken === 'VAT SUMMARY' ||
+        firstToken === 'PAYMENT SUMMARY'
+      ) {
+        inMakroItemTable = false;
+      } else if (
+        next &&
+        /^\d+(?:\.\d+)?$/.test(firstToken) &&
+        current.items.some((item) => item.x >= 80 && item.x < 250 && /^\d+(?:\.\d+)?$/.test(item.text.trim())) &&
+        /^\d{8,}$/.test(next.items[0]?.text.trim() ?? '')
+      ) {
+        const qty = current.items.find((item) => item.x < 80)?.text.trim() ?? '';
+        const unitPk = current.items.find((item) => item.x >= 80 && item.x < 250)?.text.trim() ?? '';
+        const weight = current.items.find((item) => item.x >= 250 && item.x < 390)?.text.trim() ?? '';
+        const barcode = next.items.find((item) => item.x < 80)?.text.trim() ?? '';
+        const description = next.items
+          .filter((item) => item.x >= 80 && item.x < 290)
+          .map((item) => item.text.trim())
+          .join(' ');
+        const dis = next.items.find((item) => item.x >= 290 && item.x < 315)?.text.trim() ?? '';
+        const sglInc = next.items.find((item) => item.x >= 315 && item.x < 365)?.text.trim() ?? '';
+        const vat = next.items.find((item) => item.x >= 365 && item.x < 408)?.text.trim() ?? '';
+        const pkIncCode = next.items.find((item) => item.x >= 408 && item.x < 445)?.text.trim() ?? '';
+        const totalExc = next.items.find((item) => item.x >= 445 && item.x < 515)?.text.trim() ?? '';
+        const totalInc = next.items.find((item) => item.x >= 515)?.text.trim() ?? '';
+
+        outputLines.push(
+          formatMakroItemRow({
+            qty,
+            barcode,
+            unitPk,
+            description,
+            weight,
+            dis,
+            sglInc,
+            vat,
+            pkIncCode,
+            totalExc,
+            totalInc,
+          })
+        );
+        index += 1;
+        continue;
+      }
+    }
+
+    outputLines.push(formatPdfLine(current.items));
+  }
+
+  return outputLines.join('\n');
+};
+
+export const restructureMakroInvoiceText = (content: string): string => {
+  const lines = content.split(/\r?\n/);
+  const output: string[] = [];
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
+    const nextLine = lines[index + 1];
+
+    if (
+      /^QTY[\t ]+UNIT\/PK[\t ]+WEIGHT \(Kg\)[\t ]+VAT$/i.test(line.trim()) &&
+      nextLine &&
+      /^BARCODE[\t ]+DESCRIPTION[\t ]+DIS SGL INC[\t ]+PK INC CODE[\t ]+TOTAL EXC[\t ]+TOTAL INC$/i.test(
+        nextLine.trim()
+      )
+    ) {
+      output.push(MAKRO_ITEM_HEADER);
+      index += 1;
+      continue;
+    }
+
+    const quantityMatch = line.trim().match(/^(\d+(?:\.\d+)?)[\t ]+(\d+(?:\.\d+)?)(?:[\t ]+(\S+))?$/);
+    if (quantityMatch && nextLine) {
+      const parts = nextLine.split('\t').map((part) => part.trim()).filter(Boolean);
+      const barcodeAndDesc = parts[0]?.match(/^(\d{8,})\s+(.+)$/);
+      if (barcodeAndDesc && parts.length >= 4) {
+        const [, qty, unitPk, weight = ''] = quantityMatch;
+        const [, barcode, rawDescription] = barcodeAndDesc;
+        let description = rawDescription.trim();
+        let dis = '';
+
+        if (parts.length >= 5) {
+          dis = parts[1];
+        } else {
+          const trailingDis = description.match(/^(.*?\S)\s+(02|80)$/);
+          if (trailingDis) {
+            description = trailingDis[1];
+            dis = trailingDis[2];
+          }
+        }
+
+        const sglInc = parts[parts.length - 4] ?? '';
+        const vatAndCode = (parts[parts.length - 3] ?? '').match(/^(.+?)\s+(\d+)$/);
+        const vat = vatAndCode ? vatAndCode[1].trim() : (parts[parts.length - 3] ?? '');
+        const pkIncCode = vatAndCode ? vatAndCode[2].trim() : '';
+        const totalExc = parts[parts.length - 2] ?? '';
+        const totalInc = parts[parts.length - 1] ?? '';
+
+        output.push(
+          formatMakroItemRow({
+            qty,
+            barcode,
+            unitPk,
+            description,
+            weight,
+            dis,
+            sglInc,
+            vat,
+            pkIncCode,
+            totalExc,
+            totalInc,
+          })
+        );
+        index += 1;
+        continue;
+      }
+    }
+
+    output.push(line);
+  }
+
+  return output.join('\n');
 };
 
 export const extractDocumentText = async (file: File): Promise<string> => {
@@ -32,7 +230,7 @@ export const extractDocumentText = async (file: File): Promise<string> => {
       for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber += 1) {
         const page = await pdf.getPage(pageNumber);
         const textContent = await page.getTextContent();
-        const lines: Array<{ y: number; items: Array<{ x: number; width: number; text: string }> }> = [];
+        const lines: PdfTextLine[] = [];
 
         textContent.items.forEach((item) => {
           if (!('str' in item) || !item.str.trim()) return;
@@ -45,23 +243,10 @@ export const extractDocumentText = async (file: File): Promise<string> => {
           line.items.push({ x: item.transform[4], width: item.width, text: item.str });
         });
 
-        pages.push(
-          lines
-            .sort((left, right) => right.y - left.y)
-            .map((line) => {
-              const items = line.items.sort((left, right) => left.x - right.x);
-              return items.reduce((text, item, index) => {
-                if (index === 0) return item.text;
-                const previous = items[index - 1];
-                const gap = item.x - previous.x - previous.width;
-                return `${text}${gap > 18 ? '\t' : ' '}${item.text}`;
-              }, '');
-            })
-            .join('\n')
-        );
+        pages.push(formatPdfPageLines(lines));
       }
 
-      const text = pages.join('\n').trim();
+      const text = restructureMakroInvoiceText(pages.join('\n').trim());
       if (!text) {
         throw new Error('No selectable text was found. Scanned PDFs require OCR, which is not supported yet.');
       }
@@ -71,7 +256,7 @@ export const extractDocumentText = async (file: File): Promise<string> => {
     }
   }
 
-  return (await file.text()).trim();
+  return restructureMakroInvoiceText((await file.text()).trim());
 };
 
 const splitIntoChunks = (text: string, chunkSize = 1200, overlap = 200): string[] => {

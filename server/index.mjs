@@ -42,7 +42,7 @@ const validateDocumentMetadata = (metadata, file) => {
     throw new Error('Document metadata is required.');
   }
 
-  const { id, name, size, type, uploadDate, status, tokenCount, pdfTextExtractionVersion } = metadata;
+  const { id, name, size, type, uploadDate, status, tokenCount, pdfTextExtractionVersion, content } = metadata;
   if (typeof id !== 'string' || !/^[0-9a-f-]{36}$/i.test(id)) {
     throw new Error('Document id must be a UUID.');
   }
@@ -71,12 +71,16 @@ const validateDocumentMetadata = (metadata, file) => {
   if (!['indexing', 'ready', 'error'].includes(status)) {
     throw new Error('Document status is invalid.');
   }
+  const safeContent = typeof content === 'string' && Buffer.byteLength(content, 'utf8') <= MAX_TEXT_SIZE
+    ? content
+    : '';
 
   return {
     id,
     name: safeName,
     size,
     type,
+    content: safeContent,
     uploadDate: formatDateForMysql(uploadDate),
     status,
     tokenCount: Number.isSafeInteger(tokenCount) && tokenCount >= 0 ? tokenCount : null,
@@ -193,13 +197,14 @@ app.post('/api/documents', upload.single('file'), async (request, response, next
       `INSERT INTO documents (
          id, name, size_bytes, mime_type, original_file, file_sha256, extracted_text,
          upload_date, status, token_count, pdf_text_extraction_version
-       ) VALUES (?, ?, ?, ?, ?, ?, '', ?, ?, ?, ?)
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON DUPLICATE KEY UPDATE
          name = VALUES(name),
          size_bytes = VALUES(size_bytes),
          mime_type = VALUES(mime_type),
          original_file = VALUES(original_file),
          file_sha256 = VALUES(file_sha256),
+         extracted_text = VALUES(extracted_text),
          upload_date = VALUES(upload_date),
          status = VALUES(status),
          token_count = VALUES(token_count),
@@ -212,12 +217,16 @@ app.post('/api/documents', upload.single('file'), async (request, response, next
         metadata.type,
         request.file.buffer,
         checksum,
+        metadata.content,
         metadata.uploadDate,
         metadata.status,
         metadata.tokenCount,
         metadata.pdfTextExtractionVersion,
       ]
     );
+    if (metadata.content) {
+      await replaceDocumentChunks(pool, metadata.id, metadata.content);
+    }
     response.status(201).json({ id: metadata.id, fileSha256: checksum });
   } catch (error) {
     next(error);
