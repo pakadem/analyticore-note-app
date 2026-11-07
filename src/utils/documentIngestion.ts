@@ -4,10 +4,23 @@ import {
   getStructuredDatasets,
   predictWithLinearRegression,
 } from './datasetAnalytics';
-import { getProductPriceHistory, predictProductPrices } from './retailAnalytics';
+import {
+  expandQueryWithSynonyms,
+  fuzzyTextMatchesTerm,
+  matchesRowWithSynonyms,
+} from './nluRouter';
+import {
+  combineRetailDatasets,
+  getPopularItems,
+  getProductPriceHistory,
+  getSpendProgression,
+  getVisitDays,
+  inferRetailColumns,
+  predictProductPrices,
+} from './retailAnalytics';
 
 export const MAX_DOCUMENT_SIZE = 50 * 1024 * 1024;
-export const MAX_RETRIEVED_CHUNKS = 5;
+export const MAX_RETRIEVED_CHUNKS = 30;
 export const PDF_TEXT_EXTRACTION_VERSION = 3;
 export const MAKRO_ITEM_HEADER =
   'QTY, BARCODE, UNIT/PK, DESCRIPTION, WEIGHT (Kg), DIS, SGL INC, VAT, PK INC CODE, TOTAL EXC, TOTAL INC';
@@ -284,27 +297,29 @@ const formatAnalysisNumber = (value: number): string =>
   Number.isInteger(value) ? String(value) : String(Number(value.toFixed(2)));
 
 const isBroadAnalysisQuery = (query: string): boolean =>
-  /\b(analy[sz]e|analysis|summari[sz]e|summary|overview|insights?|business|profit|costs?|revenue|financial|dataset|data)\b/i.test(query);
+  /\b(analy[sz]e|analysis|summari[sz]e|summary|overview|insights?|business|profit|costs?|spend|spending|expenditure|outlay|revenue|sales|turnover|financial|dataset|data|breakdown|report)\b/i.test(query);
 
 const summarizeStructuredDatasets = (
   documents: KnowledgeDocument[],
   query: string
 ): string => {
-  const queryTerms = query
-    .toLowerCase()
-    .match(/[\p{L}\p{N}]{2,}/gu)
-    ?.filter((term) => !STOP_WORDS.has(term)) ?? [];
+  const { expandedTerms } = expandQueryWithSynonyms(query);
+  const queryTerms = expandedTerms.filter(
+    (term) => term.length >= 2 && !STOP_WORDS.has(term)
+  );
   const datasets = getStructuredDatasets(documents).filter(
     (dataset) => !dataset.error && dataset.rows.length > 0
   );
-  const rankedDatasets = datasets
+  const matchedDatasets = datasets
     .map((dataset) => {
       const headersAndName = `${dataset.name} ${dataset.headers.join(' ')}`.toLowerCase();
       const score = queryTerms.reduce((total, term) => {
-        const matchesHeader = headersAndName.includes(term);
-        const matchesValue = !matchesHeader && dataset.rows.some((row) =>
-          Object.values(row).some((value) => value.toLowerCase().includes(term))
-        );
+        const matchesHeader = fuzzyTextMatchesTerm(headersAndName, term);
+        const matchesValue =
+          !matchesHeader &&
+          dataset.rows.some((row) =>
+            Object.values(row).some((value) => fuzzyTextMatchesTerm(value.toLowerCase(), term))
+          );
         return total + Number(matchesHeader || matchesValue);
       }, 0);
       return { dataset, score };
@@ -314,8 +329,13 @@ const summarizeStructuredDatasets = (
       right.dataset.rows.length - left.dataset.rows.length
     )
     .filter(({ score }) => score > 0 || isBroadAnalysisQuery(query))
-    .slice(0, 3)
+    .slice(0, 10)
     .map(({ dataset }) => dataset);
+
+  const combinedDataset = datasets.length > 1 ? combineRetailDatasets(datasets) : undefined;
+  const rankedDatasets = combinedDataset
+    ? [combinedDataset, ...matchedDatasets]
+    : matchedDatasets;
 
   return rankedDatasets
     .map((dataset) => {
@@ -384,10 +404,16 @@ const summarizePriceForecasts = (
     observation.product,
   ])).values());
   const normalizedQuery = query.toLowerCase();
+  const { expandedTerms: forecastTerms } = expandQueryWithSynonyms(query);
   const orderedProducts = products
     .map((product) => ({
       product,
-      relevant: normalizedQuery.includes(product.toLowerCase()),
+      relevant:
+        normalizedQuery.includes(product.toLowerCase()) ||
+        matchesRowWithSynonyms([product], query) ||
+        forecastTerms.some(
+          (term) => term.length >= 3 && fuzzyTextMatchesTerm(product.toLowerCase(), term)
+        ),
       observations: history.filter(
         (observation) => observation.product.toLowerCase() === product.toLowerCase()
       ).length,
@@ -455,6 +481,158 @@ const summarizeNumericForecasts = (
   ].join('\n');
 };
 
+export const buildGlobalKnowledgeContext = (documents: KnowledgeDocument[]): string => {
+  const readyDocuments = documents.filter((document) => document.status === 'ready');
+  if (!readyDocuments.length) {
+    return 'No ready documents are currently imported in the database.';
+  }
+
+  const datasets = getStructuredDatasets(readyDocuments).filter(
+    (dataset) => !dataset.error && dataset.rows.length > 0
+  );
+  const combinedRetail = combineRetailDatasets(datasets);
+
+  // 1. Per-file / invoice index across ALL imported files
+  const invoiceSummaries = datasets.map((dataset) => {
+    const totalCol =
+      dataset.headers.find((h) => h.toUpperCase() === 'TOTAL INC') ??
+      dataset.headers.find((h) => /total|amount|spend/i.test(h));
+    const fileSpend = totalCol
+      ? dataset.rows.reduce((sum, row) => sum + (getCsvNumber(row[totalCol]) ?? 0), 0)
+      : 0;
+    const dateLabel = dataset.invoiceDate ? `, date=${dataset.invoiceDate}` : '';
+    const customerLabel = dataset.customerName ? `, customer=${dataset.customerName}` : '';
+    return `- ${dataset.name}: rows=${dataset.rows.length}${dateLabel}${customerLabel}, total=R${formatAnalysisNumber(fileSpend)}`;
+  });
+
+  // 2. Master Item Catalogue across ALL imported files
+  const itemLedger = new Map<
+    string,
+    {
+      description: string;
+      barcode: string;
+      totalQty: number;
+      totalSpend: number;
+      minUnitPrice: number;
+      maxUnitPrice: number;
+      invoiceCount: number;
+      dates: Set<string>;
+    }
+  >();
+
+  for (const dataset of datasets) {
+    const descCol =
+      dataset.headers.find((h) => h.toUpperCase() === 'DESCRIPTION') ??
+      dataset.headers.find((h) => /item|product|description/i.test(h));
+    const barcodeCol = dataset.headers.find((h) => h.toUpperCase() === 'BARCODE');
+    const qtyCol =
+      dataset.headers.find((h) => h.toUpperCase() === 'QTY') ??
+      dataset.headers.find((h) => /qty|quantity/i.test(h));
+    const unitPriceCol =
+      dataset.headers.find((h) => h.toUpperCase() === 'SGL INC') ??
+      dataset.headers.find((h) => /unit.*price|sgl inc|price/i.test(h));
+    const totalCol =
+      dataset.headers.find((h) => h.toUpperCase() === 'TOTAL INC') ??
+      dataset.headers.find((h) => /total inc|total|amount/i.test(h));
+
+    if (!descCol) continue;
+
+    for (const row of dataset.rows) {
+      const rawDesc = (row[descCol] ?? '').trim();
+      if (!rawDesc) continue;
+      const key = rawDesc.toUpperCase();
+      const qty = (qtyCol ? getCsvNumber(row[qtyCol]) : undefined) ?? 1;
+      const totalInc = (totalCol ? getCsvNumber(row[totalCol]) : undefined) ?? 0;
+      const unitPrice =
+        (unitPriceCol ? getCsvNumber(row[unitPriceCol]) : undefined) ??
+        (qty > 0 && totalInc > 0 ? totalInc / qty : 0);
+      const barcode = barcodeCol ? (row[barcodeCol] ?? '').trim() : '';
+
+      const existing = itemLedger.get(key) ?? {
+        description: rawDesc,
+        barcode,
+        totalQty: 0,
+        totalSpend: 0,
+        minUnitPrice: Number.POSITIVE_INFINITY,
+        maxUnitPrice: 0,
+        invoiceCount: 0,
+        dates: new Set<string>(),
+      };
+
+      existing.totalQty += qty;
+      existing.totalSpend += totalInc;
+      if (unitPrice > 0) {
+        existing.minUnitPrice = Math.min(existing.minUnitPrice, unitPrice);
+        existing.maxUnitPrice = Math.max(existing.maxUnitPrice, unitPrice);
+      }
+      if (!existing.barcode && barcode) existing.barcode = barcode;
+      existing.invoiceCount += 1;
+      if (dataset.invoiceDate) existing.dates.add(dataset.invoiceDate);
+      itemLedger.set(key, existing);
+    }
+  }
+
+  const sortedLedger = Array.from(itemLedger.values()).sort(
+    (a, b) => b.totalSpend - a.totalSpend || b.totalQty - a.totalQty
+  );
+
+  const masterItemLines = sortedLedger.map((entry) => {
+    const unitRange =
+      entry.minUnitPrice !== Number.POSITIVE_INFINITY
+        ? entry.minUnitPrice === entry.maxUnitPrice
+          ? `R${formatAnalysisNumber(entry.minUnitPrice)}`
+          : `R${formatAnalysisNumber(entry.minUnitPrice)}–R${formatAnalysisNumber(entry.maxUnitPrice)}`
+        : 'N/A';
+    const dateSpan = entry.dates.size > 0 ? ` [${Array.from(entry.dates).sort().join(', ')}]` : '';
+    return `- "${entry.description}"${entry.barcode ? ` (barcode ${entry.barcode})` : ''}: totalQty=${formatAnalysisNumber(entry.totalQty)}, unitPrice=${unitRange}, totalSpend=R${formatAnalysisNumber(entry.totalSpend)}, appearances=${entry.invoiceCount}${dateSpan}`;
+  });
+
+  // 3. Global Retail Rollup (visits, monthly spend, grand totals)
+  let retailRollup = '';
+  if (combinedRetail && combinedRetail.rows.length > 0) {
+    const cols = inferRetailColumns(combinedRetail.headers);
+    const visits = cols.date
+      ? getVisitDays(combinedRetail, cols.date, cols.customer).points
+      : [];
+    const monthlySpend =
+      cols.date && cols.amount
+        ? getSpendProgression(combinedRetail, cols.date, cols.amount, 'month').points
+        : [];
+    const popular = cols.item
+      ? getPopularItems(combinedRetail, cols.item, cols.quantity).points
+      : [];
+    const grandTotalSpend = monthlySpend.reduce((sum, p) => sum + p.spent, 0);
+
+    retailRollup = [
+      `Global Combined Retail Rollup (${readyDocuments.length} files, ${combinedRetail.rows.length} line items, Grand Total Spend = R${formatAnalysisNumber(grandTotalSpend)}):`,
+      visits.length
+        ? `Visits by weekday: ${visits.map((v) => `${v.day}=${v.visits}`).join(', ')}`
+        : '',
+      monthlySpend.length
+        ? `Spend by month: ${monthlySpend.map((m) => `${m.period}=R${formatAnalysisNumber(m.spent)} (cum R${formatAnalysisNumber(m.cumulative)})`).join('; ')}`
+        : '',
+      popular.length
+        ? `Top items by volume: ${popular.map((p) => `"${p.item}" (${formatAnalysisNumber(p.purchases)})`).join(', ')}`
+        : '',
+    ]
+      .filter(Boolean)
+      .join('\n');
+  }
+
+  return [
+    `=== GLOBAL KNOWLEDGE BASE SNAPSHOT (${readyDocuments.length} IMPORTED FILES) ===`,
+    retailRollup,
+    masterItemLines.length
+      ? `Complete Master Product & Item Ledger (${masterItemLines.length} unique products across all files):\n${masterItemLines.join('\n')}`
+      : '',
+    invoiceSummaries.length
+      ? `All Imported Files / Invoices (${invoiceSummaries.length}):\n${invoiceSummaries.join('\n')}`
+      : '',
+  ]
+    .filter(Boolean)
+    .join('\n\n');
+};
+
 export const searchDocuments = (documents: KnowledgeDocument[], query: string): string => {
   const readyDocuments = documents.filter((document) => document.status === 'ready');
   if (!readyDocuments.length) return '';
@@ -464,13 +642,15 @@ export const searchDocuments = (documents: KnowledgeDocument[], query: string): 
   );
   if (!documentChunks.length) return '';
 
-  const terms = Array.from(
-    new Set(
-      query
-        .toLowerCase()
-        .match(/[\p{L}\p{N}]{2,}/gu)
-        ?.filter((term) => !STOP_WORDS.has(term)) ?? []
-    )
+  const directTerms = new Set(
+    query
+      .toLowerCase()
+      .match(/[\p{L}\p{N}]{2,}/gu)
+      ?.filter((term) => !STOP_WORDS.has(term)) ?? []
+  );
+  const { expandedTerms } = expandQueryWithSynonyms(query);
+  const terms = expandedTerms.filter(
+    (term) => term.length >= 2 && !STOP_WORDS.has(term)
   );
 
   const matches = documentChunks
@@ -478,7 +658,14 @@ export const searchDocuments = (documents: KnowledgeDocument[], query: string): 
       const normalizedText = chunk.text.toLowerCase();
       const score = terms.reduce((total, term) => {
         const occurrences = normalizedText.split(term).length - 1;
-        return total + Math.min(occurrences, 5);
+        const isDirect = directTerms.has(term);
+        if (occurrences > 0) {
+          return total + Math.min(occurrences, 5) * (isDirect ? 2 : 1);
+        }
+        if (term.length >= 4 && fuzzyTextMatchesTerm(normalizedText, term)) {
+          return total + (isDirect ? 2 : 1);
+        }
+        return total;
       }, 0);
       return { ...chunk, score };
     })
@@ -501,6 +688,7 @@ export const searchDocuments = (documents: KnowledgeDocument[], query: string): 
         })
       : [];
 
+  const globalSnapshot = buildGlobalKnowledgeContext(readyDocuments);
   const textExcerpts = selectedChunks
     .map((match) => `Source: ${match.name}\n${match.text}`)
     .join('\n\n')
@@ -516,6 +704,7 @@ export const searchDocuments = (documents: KnowledgeDocument[], query: string): 
 
   return [
     'Currency convention: user confirms that monetary values in imported files are South African rand (ZAR); report monetary amounts as R and do not convert currencies.',
+    globalSnapshot,
     textExcerpts,
     structuredAnalysis ? `Full-dataset analysis:\n${structuredAnalysis.slice(0, 5000)}` : '',
     priceForecasts,
@@ -523,5 +712,5 @@ export const searchDocuments = (documents: KnowledgeDocument[], query: string): 
   ]
     .filter(Boolean)
     .join('\n\n')
-    .slice(0, 16000);
+    .slice(0, 32000);
 };

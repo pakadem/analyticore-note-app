@@ -21,7 +21,7 @@ export const App: React.FC = () => {
     hostUrl: 'http://localhost:11434',
     modelName: 'llama3.1:8b',
     temperature: 0.7,
-    contextWindow: 4096,
+    contextWindow: 16384,
     isConnected: true,
   });
 

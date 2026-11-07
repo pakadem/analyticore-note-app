@@ -27,6 +27,17 @@ export interface KnowledgeDocument extends DocumentFile {
   pdfTextExtractionVersion?: number;
 }
 
+export interface GeneratedFileArtifact {
+  id: string;
+  title: string;
+  filename: string;
+  mimeType: string;
+  content: string;
+  binaryContent?: Uint8Array;
+  headers?: string[];
+  rows?: Record<string, string>[];
+}
+
 export interface ChatMessage {
   id: string;
   role: 'user' | 'assistant' | 'system' | 'tool';
@@ -38,6 +49,7 @@ export interface ChatMessage {
     name: string;
     args: Record<string, any>;
   }>;
+  artifacts?: GeneratedFileArtifact[];
 }
 
 export interface ApiConfig {
