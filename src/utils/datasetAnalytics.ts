@@ -1,5 +1,101 @@
 import type { KnowledgeDocument } from '../types/app';
-import { MAKRO_ITEM_HEADER, restructureMakroInvoiceText } from './documentIngestion';
+
+export const MAKRO_ITEM_HEADER =
+  'QTY, BARCODE, UNIT/PK, DESCRIPTION, WEIGHT (Kg), DIS, SGL INC, VAT, PK INC CODE, TOTAL EXC, TOTAL INC';
+
+export const MAKRO_HEADERS = MAKRO_ITEM_HEADER.split(',').map((header) => header.trim());
+
+export const formatMakroItemRow = (fields: {
+  qty: string;
+  barcode: string;
+  unitPk: string;
+  description: string;
+  weight?: string;
+  dis?: string;
+  sglInc: string;
+  vat: string;
+  pkIncCode: string;
+  totalExc: string;
+  totalInc: string;
+}): string => {
+  const escapedDescription = fields.description.trim().replace(/"/g, '""');
+  const weight = fields.weight?.trim() ?? '';
+  const dis = fields.dis?.trim() ?? '';
+  return `${fields.qty.trim()}, ${fields.barcode.trim()}, ${fields.unitPk.trim()}, "${escapedDescription}", ${weight},${dis || ' '},${fields.sglInc.trim()}, ${fields.vat.trim()}, ${fields.pkIncCode.trim()}, ${fields.totalExc.trim()}, ${fields.totalInc.trim()}`;
+};
+
+export const restructureMakroInvoiceText = (content: string): string => {
+  const lines = content.split(/\r?\n/);
+  const output: string[] = [];
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
+    const nextLine = lines[index + 1];
+
+    if (
+      /^QTY[\t ]+UNIT\/PK[\t ]+WEIGHT \(Kg\)[\t ]+VAT$/i.test(line.trim()) &&
+      nextLine &&
+      /^BARCODE[\t ]+DESCRIPTION[\t ]+DIS SGL INC[\t ]+PK INC CODE[\t ]+TOTAL EXC[\t ]+TOTAL INC$/i.test(
+        nextLine.trim()
+      )
+    ) {
+      output.push(MAKRO_ITEM_HEADER);
+      index += 1;
+      continue;
+    }
+
+    const quantityMatch = line.trim().match(/^(\d+(?:\.\d+)?)[\t ]+(\d+(?:\.\d+)?)(?:[\t ]+(\S+))?$/);
+    if (quantityMatch && nextLine) {
+      const parts = nextLine.split('\t').map((part) => part.trim()).filter(Boolean);
+      const barcodeAndDesc = parts[0]?.match(/^(\d{8,})\s+(.+)$/);
+      if (barcodeAndDesc && parts.length >= 4) {
+        const [, qty, unitPk, weight = ''] = quantityMatch;
+        const [, barcode, rawDescription] = barcodeAndDesc;
+        let description = rawDescription.trim();
+        let dis = '';
+
+        if (parts.length >= 5) {
+          dis = parts[1];
+        } else {
+          const trailingDis = description.match(/^(.*?\S)\s+(02|80)$/);
+          if (trailingDis) {
+            description = trailingDis[1];
+            dis = trailingDis[2];
+          }
+        }
+
+        const sglInc = parts[parts.length - 4] ?? '';
+        const vatAndCode = (parts[parts.length - 3] ?? '').match(/^(.+?)\s+(\d+)$/);
+        const vat = vatAndCode ? vatAndCode[1].trim() : (parts[parts.length - 3] ?? '');
+        const pkIncCode = vatAndCode ? vatAndCode[2].trim() : '';
+        const totalExc = parts[parts.length - 2] ?? '';
+        const totalInc = parts[parts.length - 1] ?? '';
+
+        output.push(
+          formatMakroItemRow({
+            qty,
+            barcode,
+            unitPk,
+            description,
+            weight,
+            dis,
+            sglInc,
+            vat,
+            pkIncCode,
+            totalExc,
+            totalInc,
+          })
+        );
+        index += 1;
+        continue;
+      }
+    }
+
+    output.push(line);
+  }
+
+  return output.join('\n');
+};
 
 export interface TabularDataset {
   id: string;
@@ -131,8 +227,6 @@ export const getCsvNumber = (value: string | undefined): number | undefined => {
   return parenthesized ? -Math.abs(parsed) : parsed;
 };
 
-const MAKRO_HEADERS = MAKRO_ITEM_HEADER.split(',').map((header) => header.trim());
-
 const parseRetailInvoice = (
   content: string
 ): {
@@ -261,7 +355,7 @@ export const getStructuredDatasets = (documents: KnowledgeDocument[]): TabularDa
         if (document.analyticsError) throw new Error(document.analyticsError);
         const isCsv =
           document.name.toLowerCase().endsWith('.csv') ||
-          document.type.toLowerCase().includes('csv');
+          (document.type ?? '').toLowerCase().includes('csv');
         const invoiceDataset = parseRetailInvoice(document.content);
         if (invoiceDataset) {
           return {

@@ -9,7 +9,7 @@ import {
 } from './datasetAnalytics';
 import { MAKRO_ITEM_HEADER, searchDocuments } from './documentIngestion';
 import { buildExcelWorkbookBytes } from './excelExport';
-import { matchesRowWithSynonyms } from './nluRouter';
+import { fuzzyTextMatchesTerm, matchesRowWithSynonyms } from './nluRouter';
 import {
   combineRetailDatasets,
   getPopularItems,
@@ -384,15 +384,15 @@ const findDataset = (
   const valid = datasets.filter((dataset) => !dataset.error && dataset.rows.length > 0);
   if (!valid.length) return undefined;
   if (!isSpecificDatasetName(datasetName)) {
-    return combineRetailDatasets(valid) ?? combineAllDatasets(valid) ?? valid[0];
+    return combineAllDatasets(valid) ?? combineRetailDatasets(valid) ?? valid[0];
   }
 
   const normalized = datasetName!.trim().toLowerCase();
   return (
     valid.find((dataset) => dataset.name.toLowerCase() === normalized) ??
     valid.find((dataset) => dataset.name.toLowerCase().includes(normalized)) ??
-    combineRetailDatasets(valid) ??
     combineAllDatasets(valid) ??
+    combineRetailDatasets(valid) ??
     valid[0]
   );
 };
@@ -473,12 +473,17 @@ export const executeAgentTool = async (
         })
       );
 
+      const grandTotalSpend = formatNumber(
+        spend.reduce((acc, point) => acc + point.spent, 0)
+      );
+
       return JSON.stringify(
         {
           dataset: targetDataset.name,
           rowCount: targetDataset.rows.length,
           inferredColumns: columns,
           currency: 'ZAR (R)',
+          grandTotalSpend,
           numericTotals,
           visitsByWeekday: visits,
           spendProgression: spend.slice(-12),
@@ -502,32 +507,94 @@ export const executeAgentTool = async (
       );
       const requestedProduct = typeof args.product === 'string' ? args.product.trim() : '';
 
-      const matchingProducts = requestedProduct
-        ? products.filter(
-            (p) =>
-              p.toLowerCase().includes(requestedProduct.toLowerCase()) ||
-              matchesRowWithSynonyms([p], requestedProduct)
-          )
-        : products;
+      const allEvaluated = products
+        .map((product) => {
+          const forecast = predictProductPrices(history, product);
+          const actualPoints = forecast.points.filter((p) => p.actual !== null);
+          const latestActual =
+            actualPoints.length > 0 ? actualPoints[actualPoints.length - 1] : undefined;
+          return {
+            product,
+            currency: 'ZAR (R)',
+            observations: forecast.rowsAnalyzed,
+            sourceFiles: forecast.sourceCount,
+            latestObservedDate: latestActual?.date ?? null,
+            latestObservedPriceZAR:
+              latestActual?.actual != null ? formatNumber(latestActual.actual) : null,
+            observedHistory: actualPoints.slice(-6).map((p) => ({
+              date: p.date,
+              priceZAR: formatNumber(p.actual!),
+            })),
+            inSampleRSquared: formatNumber(forecast.rSquared),
+            predictions: forecast.predictions.map((p) => ({
+              date: p.date,
+              predictedPriceZAR: formatNumber(p.price),
+            })),
+            hasValidForecast: !forecast.error && forecast.predictions.length > 0,
+            error: forecast.error,
+          };
+        })
+        .sort(
+          (a, b) =>
+            Number(b.hasValidForecast) - Number(a.hasValidForecast) ||
+            b.observations - a.observations ||
+            a.product.localeCompare(b.product)
+        );
 
-      const targetProducts = matchingProducts.length ? matchingProducts : products;
-      const forecasts = targetProducts.map((product) => {
-        const forecast = predictProductPrices(history, product);
-        return {
-          product,
-          currency: 'ZAR (R)',
-          observations: forecast.rowsAnalyzed,
-          sourceFiles: forecast.sourceCount,
-          inSampleRSquared: formatNumber(forecast.rSquared),
-          predictions: forecast.predictions.map((p) => ({
-            date: p.date,
-            predictedPriceZAR: formatNumber(p.price),
-          })),
-          error: forecast.error,
-        };
-      });
+      const directRequestTokens = requestedProduct
+        .toLowerCase()
+        .split(/\s+/)
+        .filter((t) => t.length >= 3);
 
-      return JSON.stringify({ availableProducts: products, forecasts }, null, 2);
+      const matchingForecasts = requestedProduct
+        ? allEvaluated
+            .filter(
+              (item) =>
+                item.product.toLowerCase().includes(requestedProduct.toLowerCase()) ||
+                matchesRowWithSynonyms([item.product], requestedProduct)
+            )
+            .sort((a, b) => {
+              const aDirect = directRequestTokens.filter((t) =>
+                fuzzyTextMatchesTerm(a.product.toLowerCase(), t)
+              ).length;
+              const bDirect = directRequestTokens.filter((t) =>
+                fuzzyTextMatchesTerm(b.product.toLowerCase(), t)
+              ).length;
+              return (
+                bDirect - aDirect ||
+                Number(b.hasValidForecast) - Number(a.hasValidForecast) ||
+                b.observations - a.observations
+              );
+            })
+        : [];
+
+      const topForecastable = allEvaluated
+        .filter((item) => item.hasValidForecast)
+        .slice(0, 15);
+
+      const selectedForecasts =
+        matchingForecasts.length > 0
+          ? [
+              ...matchingForecasts.slice(0, 15),
+              ...topForecastable
+                .filter(
+                  (tf) => !matchingForecasts.some((mf) => mf.product === tf.product)
+                )
+                .slice(0, 5),
+            ]
+          : allEvaluated.slice(0, 20);
+
+      return JSON.stringify(
+        {
+          totalProductsTracked: products.length,
+          eligibleForOLSForecastCount: allEvaluated.filter((item) => item.hasValidForecast).length,
+          note: 'OLS linear regression price forecasting requires at least 3 distinct invoice dates per product. Single-observation products report their latestObservedPriceZAR.',
+          topForecastableProducts: topForecastable.map((item) => item.product),
+          forecasts: selectedForecasts,
+        },
+        null,
+        2
+      );
     }
 
     case 'run_linear_regression': {
@@ -734,26 +801,54 @@ export const executeAgentTool = async (
         headers = [
           'Product',
           'Observations',
+          'Latest Price (ZAR)',
           'In-Sample R²',
           'Forecast Date 1',
           'Forecast Price 1 (ZAR)',
           'Forecast Date 2',
           'Forecast Price 2 (ZAR)',
         ];
-        rows = products.map((product) => {
-          const forecast = predictProductPrices(history, product);
-          const p1 = forecast.predictions[0];
-          const p2 = forecast.predictions[1];
-          return {
-            Product: product,
-            Observations: String(forecast.rowsAnalyzed),
-            'In-Sample R²': String(formatNumber(forecast.rSquared)),
-            'Forecast Date 1': p1?.date ?? '-',
-            'Forecast Price 1 (ZAR)': p1 ? `R${formatNumber(p1.price).toFixed(2)}` : '-',
-            'Forecast Date 2': p2?.date ?? '-',
-            'Forecast Price 2 (ZAR)': p2 ? `R${formatNumber(p2.price).toFixed(2)}` : '-',
-          };
-        });
+        const evaluatedRows = products
+          .map((product) => {
+            const forecast = predictProductPrices(history, product);
+            const actualPoints = forecast.points.filter((p) => p.actual !== null);
+            const latestActual =
+              actualPoints.length > 0 ? actualPoints[actualPoints.length - 1] : undefined;
+            const p1 = forecast.predictions[0];
+            const p2 = forecast.predictions[1];
+            const hasValidForecast = !forecast.error && forecast.predictions.length > 0;
+            return {
+              hasValidForecast,
+              observations: forecast.rowsAnalyzed,
+              row: {
+                Product: product,
+                Observations: String(forecast.rowsAnalyzed),
+                'Latest Price (ZAR)':
+                  latestActual?.actual != null
+                    ? `R${formatNumber(latestActual.actual).toFixed(2)}`
+                    : '-',
+                'In-Sample R²': hasValidForecast ? String(formatNumber(forecast.rSquared)) : '-',
+                'Forecast Date 1': p1?.date ?? '-',
+                'Forecast Price 1 (ZAR)': p1 ? `R${formatNumber(p1.price).toFixed(2)}` : '-',
+                'Forecast Date 2': p2?.date ?? '-',
+                'Forecast Price 2 (ZAR)': p2 ? `R${formatNumber(p2.price).toFixed(2)}` : '-',
+              } as Record<string, string>,
+            };
+          })
+          .sort(
+            (a, b) =>
+              Number(b.hasValidForecast) - Number(a.hasValidForecast) ||
+              b.observations - a.observations ||
+              a.row.Product.localeCompare(b.row.Product)
+          );
+
+        const validForecastRows = evaluatedRows
+          .filter((item) => item.hasValidForecast)
+          .map((item) => item.row);
+        rows =
+          !searchFilter && validForecastRows.length > 0
+            ? validForecastRows
+            : evaluatedRows.map((item) => item.row);
         title = title || 'Product Price Forecasts (OLS)';
       } else if (rawSource === 'combined_retail') {
         const combined = combineRetailDatasets(structuredDatasets) ?? findDataset(structuredDatasets);
@@ -775,8 +870,14 @@ export const executeAgentTool = async (
         // Default: 'makro_items' — use the 11-column Makro item format across matching or all Makro datasets
         const validDatasets = structuredDatasets.filter((d) => !d.error && d.rows.length > 0);
         const matchingDatasets = isSpecificDatasetName(requestedDatasetName)
-          ? validDatasets.filter((d) =>
-              d.name.toLowerCase().includes(requestedDatasetName!.toLowerCase())
+          ? Array.from(
+              new Map(
+                validDatasets
+                  .filter((d) =>
+                    d.name.toLowerCase().includes(requestedDatasetName!.toLowerCase())
+                  )
+                  .map((d) => [d.name.toLowerCase(), d])
+              ).values()
             )
           : validDatasets;
         const targetDatasets = matchingDatasets.length ? matchingDatasets : validDatasets;

@@ -14,6 +14,8 @@ export interface SemanticIntentPlan {
   datasetName?: string;
   searchFilter?: string;
   wantsForecast: boolean;
+  wantsRegression: boolean;
+  regressionTargetColumn?: string;
   wantsRetailMetrics: boolean;
   retailGrouping: 'day' | 'week' | 'month';
   wantsClustering: boolean;
@@ -199,10 +201,6 @@ const SYNONYM_GROUPS: string[][] = [
     'alcohol',
     'booze',
     'spirits',
-    'drink',
-    'drinks',
-    'beverage',
-    'beverages',
   ],
   [
     'juice',
@@ -211,32 +209,20 @@ const SYNONYM_GROUPS: string[][] = [
     'breakfast punch',
     'brkfast',
     'pnch',
-    'soft drink',
-    'cold drink',
-    'refreshment',
-    'beverage',
   ],
   [
     'washing machine',
     'w/machine',
     'washer',
-    'laundry',
     'front loader',
-    'hisense',
-    'appliance',
-    'appliances',
-    'white goods',
-    'silver',
-    'silv',
   ],
   [
-    'bag',
-    'bags',
     'checkout bag',
     'carrier bag',
     'shopping bag',
-    'multi use',
     'plastic bag',
+    'bag',
+    'bags',
   ],
   [
     'discount',
@@ -318,13 +304,20 @@ export const levenshteinDistance = (a: string, b: string): number => {
 
 /**
  * Checks whether a target text matches a query term either by:
- * 1. Exact substring
+ * 1. Exact substring (or word-boundary match for 3-char tokens)
  * 2. Word stem equality
  * 3. Fuzzy edit distance <= 1 (for words >= 5 chars) or <= 2 (for words >= 8 chars)
  */
 export const fuzzyTextMatchesTerm = (normalizedTarget: string, term: string): boolean => {
   const cleanTerm = term.toLowerCase().trim();
   if (!cleanTerm) return false;
+  if (cleanTerm.includes(' ')) {
+    return normalizedTarget.includes(cleanTerm);
+  }
+  if (cleanTerm.length <= 3) {
+    const escaped = cleanTerm.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    return new RegExp(`\\b${escaped}\\b`, 'i').test(normalizedTarget);
+  }
   if (normalizedTarget.includes(cleanTerm)) return true;
 
   const termStem = stemWord(cleanTerm);
@@ -332,7 +325,7 @@ export const fuzzyTextMatchesTerm = (normalizedTarget: string, term: string): bo
 
   if (cleanTerm.length < 5) return false;
   const maxDist = cleanTerm.length >= 8 ? 2 : 1;
-  const targetWords = normalizedTarget.match(/[\p{L}\p{N}]{4,}/gu) ?? [];
+  const targetWords = normalizedTarget.match(/[\p{L}\p{N}/]{4,}/gu) ?? [];
   return targetWords.some(
     (word) =>
       stemWord(word) === termStem || levenshteinDistance(word, cleanTerm) <= maxDist
@@ -352,7 +345,7 @@ export const expandQueryWithSynonyms = (query: string): {
   const expandedSet = new Set<string>(baseTerms);
 
   for (const group of SYNONYM_GROUPS) {
-    const groupMatched = group.some((phrase) => {
+    const matchedPhrases = group.filter((phrase) => {
       if (phrase.includes(' ')) {
         return lowerQuery.includes(phrase);
       }
@@ -364,12 +357,14 @@ export const expandQueryWithSynonyms = (query: string): {
       );
     });
 
-    if (groupMatched) {
+    if (matchedPhrases.length > 0) {
+      for (const phrase of matchedPhrases) {
+        if (phrase.includes(' ')) {
+          phrase.split(/\s+/).forEach((part) => expandedSet.delete(part));
+        }
+      }
       for (const synonym of group) {
         expandedSet.add(synonym);
-        synonym.split(/\s+/).forEach((token) => {
-          if (token.length >= 2) expandedSet.add(token);
-        });
       }
     }
   }
@@ -396,15 +391,260 @@ export const matchesRowWithSynonyms = (
   if (joinedRow.includes(cleanFilter)) return true;
 
   const { expandedTerms } = expandQueryWithSynonyms(cleanFilter);
-  const filterTokens = cleanFilter.split(/\s+/).filter((t) => t.length >= 2);
 
-  // Check if any expanded synonym group term appears in the row
-  const anySynonymMatches = expandedTerms.some(
+  // Check if any expanded synonym term or filter token matches the row
+  return expandedTerms.some(
     (term) => term.length >= 3 && fuzzyTextMatchesTerm(joinedRow, term)
   );
-  if (anySynonymMatches) return true;
+};
 
-  return filterTokens.every((token) => fuzzyTextMatchesTerm(joinedRow, token));
+const NON_PRODUCT_FILTER_WORDS = new Set([
+  'what',
+  'which',
+  'when',
+  'where',
+  'who',
+  'how',
+  'many',
+  'much',
+  'did',
+  'does',
+  'do',
+  'we',
+  'our',
+  'us',
+  'you',
+  'the',
+  'and',
+  'or',
+  'for',
+  'from',
+  'with',
+  'into',
+  'across',
+  'over',
+  'about',
+  'all',
+  'every',
+  'each',
+  'total',
+  'grand',
+  'sum',
+  'spend',
+  'spending',
+  'spent',
+  'expenditure',
+  'outlay',
+  'outflow',
+  'cash',
+  'cost',
+  'costs',
+  'paid',
+  'price',
+  'prices',
+  'pricing',
+  'unit',
+  'sgl',
+  'inc',
+  'exc',
+  'vat',
+  'dis',
+  'qty',
+  'quantity',
+  'barcode',
+  'description',
+  'weight',
+  'code',
+  'table',
+  'tables',
+  'tabular',
+  'grid',
+  'sheet',
+  'spreadsheet',
+  'workbook',
+  'excel',
+  'xlsx',
+  'xls',
+  'csv',
+  'json',
+  'txt',
+  'text',
+  'markdown',
+  'md',
+  'file',
+  'files',
+  'document',
+  'documents',
+  'invoice',
+  'invoices',
+  'receipt',
+  'receipts',
+  'slip',
+  'slips',
+  'makro',
+  'masstores',
+  'dataset',
+  'datasets',
+  'record',
+  'records',
+  'row',
+  'rows',
+  'line',
+  'item',
+  'items',
+  'product',
+  'products',
+  'purchase',
+  'purchases',
+  'purchased',
+  'buy',
+  'bought',
+  'transaction',
+  'transactions',
+  'report',
+  'list',
+  'breakdown',
+  'schedule',
+  'summary',
+  'overview',
+  'show',
+  'give',
+  'create',
+  'generate',
+  'build',
+  'make',
+  'export',
+  'download',
+  'downloadable',
+  'save',
+  'extract',
+  'find',
+  'search',
+  'look',
+  'get',
+  'me',
+  'to',
+  'of',
+  'in',
+  'on',
+  'at',
+  'by',
+  'as',
+  'is',
+  'are',
+  'was',
+  'were',
+  'be',
+  'will',
+  'going',
+  'next',
+  'future',
+  'upcoming',
+  'month',
+  'months',
+  'monthly',
+  'week',
+  'weeks',
+  'weekly',
+  'day',
+  'days',
+  'daily',
+  'weekday',
+  'year',
+  'forecast',
+  'forecasts',
+  'forecasting',
+  'predict',
+  'prediction',
+  'predictions',
+  'project',
+  'projection',
+  'trend',
+  'linear',
+  'regression',
+  'ols',
+  'cluster',
+  'clusters',
+  'clustering',
+  'kmeans',
+  'segment',
+  'segments',
+  'segmentation',
+  'popular',
+  'top',
+  'best',
+  'most',
+  'frequent',
+  'visit',
+  'visits',
+  'trip',
+  'trips',
+  'shopping',
+  'uploaded',
+  'imported',
+  'time',
+  'times',
+  'it',
+  'them',
+  'their',
+  'different',
+  'compare',
+  'run',
+  'using',
+  'progression',
+  'cumulative',
+  'period',
+  'periods',
+  'amount',
+  'amounts',
+  'number',
+  'numbers',
+  'value',
+  'values',
+  'dashboard',
+  'home',
+  'main',
+  'analytics',
+  'screen',
+  'tab',
+  'page',
+  'view',
+  'settings',
+  'setup',
+  'switch',
+  'open',
+  'take',
+  'back',
+  'navigate',
+  'connection',
+  'ollama',
+  'model',
+  'api',
+]);
+
+/**
+ * Extracts specific product/brand/category filter keywords from a natural-language
+ * query when present (e.g., "whiskey", "washing machine", "chivas regal", "liquifruit").
+ */
+export const extractProductSearchFilter = (
+  query: string,
+  documents: KnowledgeDocument[]
+): string | undefined => {
+  let cleaned = query.toLowerCase();
+  for (const doc of documents) {
+    const docLower = doc.name.toLowerCase();
+    cleaned = cleaned.replace(docLower, ' ');
+    cleaned = cleaned.replace(docLower.replace(/\.pdf$/i, ''), ' ');
+  }
+
+  const tokens =
+    cleaned
+      .match(/[\p{L}\p{N}/]{3,}/gu)
+      ?.map((t) => t.trim())
+      .filter((t) => !NON_PRODUCT_FILTER_WORDS.has(t) && !/^\d+$/.test(t)) ?? [];
+
+  if (tokens.length === 0) return undefined;
+  return Array.from(new Set(tokens)).join(' ');
 };
 
 /**
@@ -418,28 +658,45 @@ export const classifyNaturalLanguageIntent = (
   const lower = query.toLowerCase();
   const { expandedQuery, expandedTerms } = expandQueryWithSynonyms(query);
 
-  // Navigation intent (e.g., "take me to upload", "show the dashboard", "open model settings")
+  // Navigation intent (strictly matches UI tab switching commands)
   let targetTab: NavTab | undefined;
   if (
-    /\b(open|go to|switch|navigate|take me|show me|view|bring up)\b.*\b(dashboard|home|main|overview|charts|upload|ingest|import|files|documents|api|setup|settings|model|connection|ollama)\b/i.test(
+    /\b(take me to|go to|go back to|switch to|navigate to|bring up the)\b.*\b(dashboard|home|main|analytics|overview|upload|ingest|import|file import|api|setup|settings|model|connection|ollama)\b/i.test(
       lower
-    )
+    ) ||
+    /\b(open|switch|view)\b.*\b(screen|tab|page|view|settings|dashboard|setup)\b/i.test(lower)
   ) {
-    targetTab = /\b(upload|ingest|import|files|documents)\b/i.test(lower)
+    targetTab = /\b(upload|ingest|import)\b/i.test(lower)
       ? 'upload'
       : /\b(api|setup|settings|model|connection|ollama)\b/i.test(lower)
         ? 'api'
         : 'home';
   }
 
-  // Table or file creation intent (recognizes direct requests and natural phrasing)
-  const wantsTableOrFile =
-    /\b(table|tabular|grid|sheet|spreadsheet|csv|xlsx|xls|workbook|json|txt|markdown|excel|export|download|downloadable|save as|extract|dump|item list|line items)\b/i.test(
-      lower
-    ) ||
-    /\b(give me|show me|create|generate|build|make|prepare|compile|list all|breakdown of)\b.*\b(list|items|invoices|purchases|transactions|products|schedule|report|file|rows|records)\b/i.test(
+  const matchedDoc = documents.find(
+    (doc) =>
+      lower.includes(doc.name.toLowerCase()) ||
+      lower.includes(doc.name.replace(/\.pdf$/i, '').toLowerCase())
+  );
+
+  const hasExplicitExportOrTable =
+    /\b(table|tabular|grid|sheet|spreadsheet|csv|xlsx|xls|workbook|json|txt|markdown|excel|export|download|downloadable|save as|extract|dump|item list|line items|text report)\b/i.test(
       lower
     );
+
+  const searchFilter =
+    !targetTab || hasExplicitExportOrTable
+      ? extractProductSearchFilter(query, documents)
+      : undefined;
+
+  // Table or file creation intent (recognizes direct requests and natural phrasing, including in multi-action prompts)
+  const wantsTableOrFile =
+    hasExplicitExportOrTable ||
+    (!targetTab &&
+      (/\b(give me|show me|create|generate|build|make|prepare|compile|list all|breakdown of|show)\b.*\b(list|items|line items|invoices|purchases|transactions|products|schedule|report|file|rows|records)\b/i.test(
+        lower
+      ) ||
+        (/\b(show me all|list all|find all|give me all)\b/i.test(lower) && Boolean(searchFilter))));
 
   const fileFormat: 'csv' | 'xlsx' | 'json' | 'txt' | 'md' = /\b(xlsx|xls|excel|workbook|spreadsheet)\b/i.test(
     lower
@@ -453,14 +710,21 @@ export const classifyNaturalLanguageIntent = (
           ? 'md'
           : 'csv';
 
-  const matchedDoc = documents.find(
-    (doc) =>
-      lower.includes(doc.name.toLowerCase()) ||
-      lower.includes(doc.name.replace(/\.pdf$/i, '').toLowerCase())
-  );
+  const wantsRegression =
+    /\b(linear regression|regression|ols|ordinary least squares|r-squared|r²|r2)\b/i.test(lower);
+
+  const regressionTargetColumn = /\btotal exc\b/i.test(lower)
+    ? 'TOTAL EXC'
+    : /\bsgl inc\b|\bunit price\b/i.test(lower)
+      ? 'SGL INC'
+      : /\bvat\b/i.test(lower)
+        ? 'VAT'
+        : /\bqty\b|\bquantity\b/i.test(lower)
+          ? 'QTY'
+          : 'TOTAL INC';
 
   const wantsForecast =
-    /\b(forecast|forecasts|forecasting|predict|prediction|predictions|project|projection|future|upcoming|next month|next quarter|next year|outlook|trajectory|going to cost|will cost|price trend|expected price)\b/i.test(
+    /\b(forecast|forecasts|forecasting|predict|prediction|predictions|project|projection|future|upcoming|next month|next quarter|next year|outlook|trajectory|going to cost|will cost|price trend|expected price|will the price)\b/i.test(
       lower
     );
 
@@ -475,29 +739,30 @@ export const classifyNaturalLanguageIntent = (
     );
 
   const wantsSpendProgression =
-    /\b(spend progression|monthly spend|weekly spend|daily spend|spend over time|expenditure over time|outflow|cash flow|how much did we spend|total spent|spending trend)\b/i.test(
+    /\b(spend progression|monthly spend|monthly cash|weekly spend|daily spend|spend over time|expenditure over time|outflow|cash flow|cash outlay|how much did we spend|total spent|spending trend|spending across different months|compare.*spending)\b/i.test(
       lower
     );
 
   const wantsRetailMetrics =
     wantsPopular ||
     wantsSpendProgression ||
-    /\b(visit|visits|trips|weekday|busiest day|spend|spending|expenditure|outlay|revenue|sales|turnover|cost|paid|bill|retail|summary|overview)\b/i.test(
+    /\b(visit|visits|trips|shopping trips|weekday|day of the week|busiest day|spend|spending|expenditure|outlay|revenue|sales|turnover|cost|paid|bill|retail|summary|overview|grand total)\b/i.test(
       lower
     );
 
-  const retailGrouping: 'day' | 'week' | 'month' = /\b(week|weekly)\b/i.test(lower)
-    ? 'week'
-    : /\b(day|daily)\b/i.test(lower)
-      ? 'day'
-      : 'month';
+  const retailGrouping: 'day' | 'week' | 'month' =
+    /\b(week|weekly)\b/i.test(lower) && !/\bday of the week\b/i.test(lower)
+      ? 'week'
+      : /\b(day|daily)\b/i.test(lower) && !/\bday of the week\b/i.test(lower)
+        ? 'day'
+        : 'month';
 
   let tableSource: SemanticIntentPlan['tableSource'] = 'makro_items';
-  if (wantsForecast) {
+  if (wantsForecast && !matchedDoc) {
     tableSource = 'price_forecasts';
   } else if (wantsPopular && !/\b(all items|makro|invoice)\b/i.test(lower)) {
     tableSource = 'popular_items';
-  } else if (wantsSpendProgression) {
+  } else if (wantsSpendProgression && !searchFilter) {
     tableSource = 'spend_progression';
   } else if (/\b(combined|all transactions)\b/i.test(lower) && !/\bmakro\b/i.test(lower)) {
     tableSource = 'combined_retail';
@@ -510,7 +775,13 @@ export const classifyNaturalLanguageIntent = (
     tableSource,
     fileFormat,
     datasetName: matchedDoc?.name,
+    searchFilter:
+      tableSource === 'popular_items' || tableSource === 'spend_progression'
+        ? undefined
+        : searchFilter,
     wantsForecast,
+    wantsRegression,
+    regressionTargetColumn,
     wantsRetailMetrics,
     retailGrouping,
     wantsClustering,
@@ -520,10 +791,27 @@ export const classifyNaturalLanguageIntent = (
   };
 };
 
+const VALID_TABLE_SOURCES = new Set<SemanticIntentPlan['tableSource']>([
+  'makro_items',
+  'combined_retail',
+  'dataset',
+  'popular_items',
+  'spend_progression',
+  'price_forecasts',
+]);
+
+const VALID_FILE_FORMATS = new Set<SemanticIntentPlan['fileFormat']>([
+  'csv',
+  'xlsx',
+  'json',
+  'txt',
+  'md',
+]);
+
 /**
  * Optional LLM-powered semantic query expansion and intent refinement for models
  * without native tool support, merging LLM semantic understanding with the
- * deterministic synonym router.
+ * deterministic synonym router without overwriting specific deterministic choices.
  */
 export const refineIntentWithLLM = async (
   ollama: Ollama,
@@ -575,15 +863,31 @@ export const refineIntentWithLLM = async (
       : [];
     const mergedTerms = Array.from(new Set([...basePlan.expandedTerms, ...extraSynonyms]));
 
+    const resolvedTableSource =
+      basePlan.tableSource !== 'makro_items'
+        ? basePlan.tableSource
+        : parsed.tableSource && VALID_TABLE_SOURCES.has(parsed.tableSource)
+          ? parsed.tableSource
+          : basePlan.tableSource;
+
+    const resolvedFileFormat =
+      basePlan.fileFormat !== 'csv'
+        ? basePlan.fileFormat
+        : parsed.fileFormat && VALID_FILE_FORMATS.has(parsed.fileFormat)
+          ? parsed.fileFormat
+          : basePlan.fileFormat;
+
     return {
       ...basePlan,
-      wantsTableOrFile: basePlan.wantsTableOrFile || Boolean(parsed.wantsTableOrFile),
-      tableSource: parsed.tableSource ?? basePlan.tableSource,
-      fileFormat: parsed.fileFormat ?? basePlan.fileFormat,
+      wantsTableOrFile:
+        !basePlan.targetTab && (basePlan.wantsTableOrFile || Boolean(parsed.wantsTableOrFile)),
+      tableSource: resolvedTableSource,
+      fileFormat: resolvedFileFormat,
       searchFilter:
-        typeof parsed.searchFilter === 'string' && parsed.searchFilter.trim()
+        basePlan.searchFilter ??
+        (typeof parsed.searchFilter === 'string' && parsed.searchFilter.trim()
           ? parsed.searchFilter.trim()
-          : basePlan.searchFilter,
+          : undefined),
       wantsForecast: basePlan.wantsForecast || Boolean(parsed.wantsForecast),
       wantsRetailMetrics: basePlan.wantsRetailMetrics || Boolean(parsed.wantsRetailMetrics),
       wantsClustering: basePlan.wantsClustering || Boolean(parsed.wantsClustering),

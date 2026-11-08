@@ -67,6 +67,7 @@ const inferPriceColumn = (headers: string[]): string => {
     normalized: normalizeHeader(header),
   }));
   const hints = [
+    'sgl inc',
     'unit price',
     'price per unit',
     'product price',
@@ -186,9 +187,16 @@ export const predictProductPrices = (
   }));
   const fit = fitLinearRegression(points);
 
+  const observedPoints = observations.map((observation) => ({
+    date: observation.date,
+    actual: observation.price,
+    fitted: null,
+    forecast: null,
+  }));
+
   if (observations.length < 3) {
     return {
-      points: [],
+      points: observedPoints,
       predictions: [],
       rSquared: 0,
       rowsAnalyzed: observations.length,
@@ -199,7 +207,7 @@ export const predictProductPrices = (
 
   if (!fit) {
     return {
-      points: [],
+      points: observedPoints,
       predictions: [],
       rSquared: 0,
       rowsAnalyzed: observations.length,

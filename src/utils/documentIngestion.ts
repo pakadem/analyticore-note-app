@@ -1,13 +1,17 @@
 import type { KnowledgeDocument } from '../types/app';
 import {
+  formatMakroItemRow,
   getCsvNumber,
   getStructuredDatasets,
+  MAKRO_ITEM_HEADER,
   predictWithLinearRegression,
+  restructureMakroInvoiceText,
+  type TabularDataset,
 } from './datasetAnalytics';
 import {
   expandQueryWithSynonyms,
+  extractProductSearchFilter,
   fuzzyTextMatchesTerm,
-  matchesRowWithSynonyms,
 } from './nluRouter';
 import {
   combineRetailDatasets,
@@ -19,11 +23,11 @@ import {
   predictProductPrices,
 } from './retailAnalytics';
 
+export { MAKRO_ITEM_HEADER, restructureMakroInvoiceText };
+
 export const MAX_DOCUMENT_SIZE = 50 * 1024 * 1024;
 export const MAX_RETRIEVED_CHUNKS = 30;
 export const PDF_TEXT_EXTRACTION_VERSION = 3;
-export const MAKRO_ITEM_HEADER =
-  'QTY, BARCODE, UNIT/PK, DESCRIPTION, WEIGHT (Kg), DIS, SGL INC, VAT, PK INC CODE, TOTAL EXC, TOTAL INC';
 const SUPPORTED_EXTENSIONS = new Set(['pdf', 'csv', 'txt']);
 
 export const isSupportedDocument = (file: File): boolean => {
@@ -41,25 +45,6 @@ interface PdfTextLine {
   y: number;
   items: PdfPositionedItem[];
 }
-
-const formatMakroItemRow = (fields: {
-  qty: string;
-  barcode: string;
-  unitPk: string;
-  description: string;
-  weight?: string;
-  dis?: string;
-  sglInc: string;
-  vat: string;
-  pkIncCode: string;
-  totalExc: string;
-  totalInc: string;
-}): string => {
-  const escapedDescription = fields.description.trim().replace(/"/g, '""');
-  const weight = fields.weight?.trim() ?? '';
-  const dis = fields.dis?.trim() ?? '';
-  return `${fields.qty.trim()}, ${fields.barcode.trim()}, ${fields.unitPk.trim()}, "${escapedDescription}", ${weight},${dis || ' '},${fields.sglInc.trim()}, ${fields.vat.trim()}, ${fields.pkIncCode.trim()}, ${fields.totalExc.trim()}, ${fields.totalInc.trim()}`;
-};
 
 const formatPdfLine = (items: PdfPositionedItem[]): string =>
   items.reduce((text, item, index) => {
@@ -152,79 +137,6 @@ const formatPdfPageLines = (lines: PdfTextLine[]): string => {
   }
 
   return outputLines.join('\n');
-};
-
-export const restructureMakroInvoiceText = (content: string): string => {
-  const lines = content.split(/\r?\n/);
-  const output: string[] = [];
-
-  for (let index = 0; index < lines.length; index += 1) {
-    const line = lines[index];
-    const nextLine = lines[index + 1];
-
-    if (
-      /^QTY[\t ]+UNIT\/PK[\t ]+WEIGHT \(Kg\)[\t ]+VAT$/i.test(line.trim()) &&
-      nextLine &&
-      /^BARCODE[\t ]+DESCRIPTION[\t ]+DIS SGL INC[\t ]+PK INC CODE[\t ]+TOTAL EXC[\t ]+TOTAL INC$/i.test(
-        nextLine.trim()
-      )
-    ) {
-      output.push(MAKRO_ITEM_HEADER);
-      index += 1;
-      continue;
-    }
-
-    const quantityMatch = line.trim().match(/^(\d+(?:\.\d+)?)[\t ]+(\d+(?:\.\d+)?)(?:[\t ]+(\S+))?$/);
-    if (quantityMatch && nextLine) {
-      const parts = nextLine.split('\t').map((part) => part.trim()).filter(Boolean);
-      const barcodeAndDesc = parts[0]?.match(/^(\d{8,})\s+(.+)$/);
-      if (barcodeAndDesc && parts.length >= 4) {
-        const [, qty, unitPk, weight = ''] = quantityMatch;
-        const [, barcode, rawDescription] = barcodeAndDesc;
-        let description = rawDescription.trim();
-        let dis = '';
-
-        if (parts.length >= 5) {
-          dis = parts[1];
-        } else {
-          const trailingDis = description.match(/^(.*?\S)\s+(02|80)$/);
-          if (trailingDis) {
-            description = trailingDis[1];
-            dis = trailingDis[2];
-          }
-        }
-
-        const sglInc = parts[parts.length - 4] ?? '';
-        const vatAndCode = (parts[parts.length - 3] ?? '').match(/^(.+?)\s+(\d+)$/);
-        const vat = vatAndCode ? vatAndCode[1].trim() : (parts[parts.length - 3] ?? '');
-        const pkIncCode = vatAndCode ? vatAndCode[2].trim() : '';
-        const totalExc = parts[parts.length - 2] ?? '';
-        const totalInc = parts[parts.length - 1] ?? '';
-
-        output.push(
-          formatMakroItemRow({
-            qty,
-            barcode,
-            unitPk,
-            description,
-            weight,
-            dis,
-            sglInc,
-            vat,
-            pkIncCode,
-            totalExc,
-            totalInc,
-          })
-        );
-        index += 1;
-        continue;
-      }
-    }
-
-    output.push(line);
-  }
-
-  return output.join('\n');
 };
 
 export const extractDocumentText = async (file: File): Promise<string> => {
@@ -405,39 +317,59 @@ const summarizePriceForecasts = (
   ])).values());
   const normalizedQuery = query.toLowerCase();
   const { expandedTerms: forecastTerms } = expandQueryWithSynonyms(query);
-  const orderedProducts = products
-    .map((product) => ({
-      product,
-      relevant:
-        normalizedQuery.includes(product.toLowerCase()) ||
-        matchesRowWithSynonyms([product], query) ||
-        forecastTerms.some(
-          (term) => term.length >= 3 && fuzzyTextMatchesTerm(product.toLowerCase(), term)
-        ),
-      observations: history.filter(
-        (observation) => observation.product.toLowerCase() === product.toLowerCase()
-      ).length,
-    }))
-    .sort((left, right) =>
-      Number(right.relevant) - Number(left.relevant) ||
-      right.observations - left.observations ||
-      left.product.localeCompare(right.product)
-    )
-    .slice(0, 10);
+  const nonGenericForecastTerms = forecastTerms.filter(
+    (term) =>
+      term.length >= 3 &&
+      !/^(price|prices|pricing|forecast|forecasts|forecasting|predict|prediction|predictions|project|projection|projections|future|upcoming|next|month|quarter|year|outlook|estimate|trajectory|trend|inflation|change|going|cost|will|unit|single|sgl|inc|each|per|item|pack|rate|what|the|and|for|all|product|products|json|csv|xlsx|table|export|download)$/.test(
+        term
+      )
+  );
 
-  const forecasts = orderedProducts.map(({ product }) => {
+  const evaluatedProducts = products.map((product) => {
     const forecast = predictProductPrices(history, product);
+    const hasSpecificMatch =
+      nonGenericForecastTerms.length > 0 &&
+      (normalizedQuery.includes(product.toLowerCase()) ||
+        nonGenericForecastTerms.some((term) =>
+          fuzzyTextMatchesTerm(product.toLowerCase(), term)
+        ));
+    return {
+      product,
+      forecast,
+      relevant: hasSpecificMatch,
+      hasValidForecast: !forecast.error && forecast.predictions.length > 0,
+      observations: forecast.rowsAnalyzed,
+    };
+  });
+
+  const orderedProducts = evaluatedProducts
+    .sort(
+      (left, right) =>
+        Number(right.relevant) - Number(left.relevant) ||
+        Number(right.hasValidForecast) - Number(left.hasValidForecast) ||
+        right.observations - left.observations ||
+        left.product.localeCompare(right.product)
+    )
+    .slice(0, 12);
+
+  const forecasts = orderedProducts.map(({ product, forecast }) => {
+    const observedPrices = forecast.points
+      .filter((p) => p.actual !== null)
+      .map((p) => `${p.date}=R${formatAnalysisNumber(p.actual!)}`);
+    const latestObserved =
+      observedPrices.length > 0 ? observedPrices[observedPrices.length - 1] : 'N/A';
+
     if (forecast.error) {
-      return `${product}: ${forecast.error} Observations: ${forecast.rowsAnalyzed}; source files: ${forecast.sourceCount}.`;
+      return `${product}: ${forecast.error} Observed price history (${forecast.rowsAnalyzed} dated observation(s) across ${forecast.sourceCount} file(s)): ${observedPrices.join(', ') || latestObserved}.`;
     }
 
-    return `${product}: ${forecast.predictions
-      .map(({ date, price }) => `${date}=${formatAnalysisNumber(price)}`)
-      .join(', ')}; observations=${forecast.rowsAnalyzed}; source files=${forecast.sourceCount}; in-sample R²=${formatAnalysisNumber(forecast.rSquared)}.`;
+    return `${product}: forecasted next dates ${forecast.predictions
+      .map(({ date, price }) => `${date}=R${formatAnalysisNumber(price)}`)
+      .join(', ')}; latest observed=${latestObserved}; observations=${forecast.rowsAnalyzed}; source files=${forecast.sourceCount}; in-sample R²=${formatAnalysisNumber(forecast.rSquared)}.`;
   });
 
   return [
-    'Calculated product-price forecasts in South African rand (R; ordinary least squares linear regression; predictions are estimates, not guarantees):',
+    'Calculated product-price forecasts in South African rand (R; ordinary least squares linear regression on SGL INC unit price; requires 3+ distinct invoice dates):',
     ...forecasts,
   ].join('\n');
 };
@@ -481,44 +413,19 @@ const summarizeNumericForecasts = (
   ].join('\n');
 };
 
-export const buildGlobalKnowledgeContext = (documents: KnowledgeDocument[]): string => {
-  const readyDocuments = documents.filter((document) => document.status === 'ready');
-  if (!readyDocuments.length) {
-    return 'No ready documents are currently imported in the database.';
-  }
+interface MasterLedgerEntry {
+  description: string;
+  barcode: string;
+  totalQty: number;
+  totalSpend: number;
+  minUnitPrice: number;
+  maxUnitPrice: number;
+  invoiceCount: number;
+  dates: Set<string>;
+}
 
-  const datasets = getStructuredDatasets(readyDocuments).filter(
-    (dataset) => !dataset.error && dataset.rows.length > 0
-  );
-  const combinedRetail = combineRetailDatasets(datasets);
-
-  // 1. Per-file / invoice index across ALL imported files
-  const invoiceSummaries = datasets.map((dataset) => {
-    const totalCol =
-      dataset.headers.find((h) => h.toUpperCase() === 'TOTAL INC') ??
-      dataset.headers.find((h) => /total|amount|spend/i.test(h));
-    const fileSpend = totalCol
-      ? dataset.rows.reduce((sum, row) => sum + (getCsvNumber(row[totalCol]) ?? 0), 0)
-      : 0;
-    const dateLabel = dataset.invoiceDate ? `, date=${dataset.invoiceDate}` : '';
-    const customerLabel = dataset.customerName ? `, customer=${dataset.customerName}` : '';
-    return `- ${dataset.name}: rows=${dataset.rows.length}${dateLabel}${customerLabel}, total=R${formatAnalysisNumber(fileSpend)}`;
-  });
-
-  // 2. Master Item Catalogue across ALL imported files
-  const itemLedger = new Map<
-    string,
-    {
-      description: string;
-      barcode: string;
-      totalQty: number;
-      totalSpend: number;
-      minUnitPrice: number;
-      maxUnitPrice: number;
-      invoiceCount: number;
-      dates: Set<string>;
-    }
-  >();
+const buildMasterItemLedger = (datasets: TabularDataset[]): MasterLedgerEntry[] => {
+  const itemLedger = new Map<string, MasterLedgerEntry>();
 
   for (const dataset of datasets) {
     const descCol =
@@ -572,22 +479,91 @@ export const buildGlobalKnowledgeContext = (documents: KnowledgeDocument[]): str
     }
   }
 
-  const sortedLedger = Array.from(itemLedger.values()).sort(
+  return Array.from(itemLedger.values()).sort(
     (a, b) => b.totalSpend - a.totalSpend || b.totalQty - a.totalQty
   );
+};
 
-  const masterItemLines = sortedLedger.map((entry) => {
-    const unitRange =
-      entry.minUnitPrice !== Number.POSITIVE_INFINITY
-        ? entry.minUnitPrice === entry.maxUnitPrice
-          ? `R${formatAnalysisNumber(entry.minUnitPrice)}`
-          : `R${formatAnalysisNumber(entry.minUnitPrice)}–R${formatAnalysisNumber(entry.maxUnitPrice)}`
-        : 'N/A';
-    const dateSpan = entry.dates.size > 0 ? ` [${Array.from(entry.dates).sort().join(', ')}]` : '';
-    return `- "${entry.description}"${entry.barcode ? ` (barcode ${entry.barcode})` : ''}: totalQty=${formatAnalysisNumber(entry.totalQty)}, unitPrice=${unitRange}, totalSpend=R${formatAnalysisNumber(entry.totalSpend)}, appearances=${entry.invoiceCount}${dateSpan}`;
-  });
+const formatLedgerEntryLine = (entry: MasterLedgerEntry): string => {
+  const unitRange =
+    entry.minUnitPrice !== Number.POSITIVE_INFINITY
+      ? entry.minUnitPrice === entry.maxUnitPrice
+        ? `R${formatAnalysisNumber(entry.minUnitPrice)}`
+        : `R${formatAnalysisNumber(entry.minUnitPrice)}–R${formatAnalysisNumber(entry.maxUnitPrice)}`
+      : 'N/A';
+  const sortedDates = Array.from(entry.dates).sort();
+  const dateSpan =
+    sortedDates.length > 0
+      ? sortedDates.length <= 3
+        ? ` [dates: ${sortedDates.join(', ')}]`
+        : ` [${sortedDates.length} dates: ${sortedDates[0]} to ${sortedDates[sortedDates.length - 1]}]`
+      : '';
+  return `- "${entry.description}"${entry.barcode ? ` (barcode ${entry.barcode})` : ''}: totalQty=${formatAnalysisNumber(entry.totalQty)}, unitPrice=${unitRange}, totalSpend=R${formatAnalysisNumber(entry.totalSpend)}, appearances=${entry.invoiceCount}${dateSpan}`;
+};
 
-  // 3. Global Retail Rollup (visits, monthly spend, grand totals)
+export const buildGlobalKnowledgeContext = (documents: KnowledgeDocument[]): string => {
+  const readyDocuments = documents.filter((document) => document.status === 'ready');
+  if (!readyDocuments.length) {
+    return 'No ready documents are currently imported in the database.';
+  }
+
+  const datasets = getStructuredDatasets(readyDocuments).filter(
+    (dataset) => !dataset.error && dataset.rows.length > 0
+  );
+  const combinedRetail = combineRetailDatasets(datasets);
+
+  // Deduplicated unique invoices check
+  const uniqueDatasetMap = new Map<string, { dataset: TabularDataset; count: number; spend: number }>();
+  let totalAllFilesSpend = 0;
+
+  for (const dataset of datasets) {
+    const totalCol =
+      dataset.headers.find((h) => h.toUpperCase() === 'TOTAL INC') ??
+      dataset.headers.find((h) => /total|amount|spend/i.test(h));
+    const fileSpend = totalCol
+      ? dataset.rows.reduce((sum, row) => sum + (getCsvNumber(row[totalCol]) ?? 0), 0)
+      : 0;
+    totalAllFilesSpend += fileSpend;
+    const key = dataset.name.toLowerCase();
+    const existing = uniqueDatasetMap.get(key);
+    if (existing) {
+      existing.count += 1;
+    } else {
+      uniqueDatasetMap.set(key, { dataset, count: 1, spend: fileSpend });
+    }
+  }
+
+  const uniqueInvoices = Array.from(uniqueDatasetMap.values());
+  const uniqueTotalSpend = uniqueInvoices.reduce((sum, item) => sum + item.spend, 0);
+
+  // Master Item Catalogue across ALL imported files
+  const sortedLedger = buildMasterItemLedger(datasets);
+  const topBySpend = sortedLedger.slice(0, 35);
+  const topByQty = [...sortedLedger]
+    .sort((a, b) => b.totalQty - a.totalQty)
+    .slice(0, 15)
+    .filter((entry) => !topBySpend.some((s) => s.description === entry.description));
+  const combinedTopLedgerLines = [...topBySpend, ...topByQty].map(formatLedgerEntryLine);
+
+  // Top Forecastable Products (3+ distinct purchase dates)
+  const history = getProductPriceHistory(datasets);
+  const distinctProducts = Array.from(
+    new Map(history.map((h) => [h.product.toLowerCase(), h.product])).values()
+  );
+  const validForecastLines = distinctProducts
+    .map((product) => ({ product, forecast: predictProductPrices(history, product) }))
+    .filter(({ forecast }) => !forecast.error && forecast.predictions.length > 0)
+    .sort((a, b) => b.forecast.rowsAnalyzed - a.forecast.rowsAnalyzed)
+    .slice(0, 12)
+    .map(({ product, forecast }) => {
+      const nextPreds = forecast.predictions
+        .slice(0, 2)
+        .map((p) => `${p.date}=R${formatAnalysisNumber(p.price)}`)
+        .join(', ');
+      return `- "${product}": ${forecast.rowsAnalyzed} dated observations, R²=${formatAnalysisNumber(forecast.rSquared)}, OLS forecast: ${nextPreds}`;
+    });
+
+  // Global Retail Rollup (visits, monthly spend, grand totals)
   let retailRollup = '';
   if (combinedRetail && combinedRetail.rows.length > 0) {
     const cols = inferRetailColumns(combinedRetail.headers);
@@ -601,18 +577,19 @@ export const buildGlobalKnowledgeContext = (documents: KnowledgeDocument[]): str
     const popular = cols.item
       ? getPopularItems(combinedRetail, cols.item, cols.quantity).points
       : [];
-    const grandTotalSpend = monthlySpend.reduce((sum, p) => sum + p.spent, 0);
+    const grandTotalSpend = monthlySpend.reduce((sum, p) => sum + p.spent, 0) || totalAllFilesSpend;
 
     retailRollup = [
-      `Global Combined Retail Rollup (${readyDocuments.length} files, ${combinedRetail.rows.length} line items, Grand Total Spend = R${formatAnalysisNumber(grandTotalSpend)}):`,
+      `Global Combined Retail Rollup: ${readyDocuments.length} uploaded files (${uniqueInvoices.length} unique invoice filenames), ${combinedRetail.rows.length} total line items across all uploaded files.`,
+      `Grand Total Spend (all ${readyDocuments.length} uploaded files) = R${formatAnalysisNumber(grandTotalSpend)} (Unique deduplicated invoices spend across ${uniqueInvoices.length} unique invoices = R${formatAnalysisNumber(uniqueTotalSpend)}).`,
       visits.length
-        ? `Visits by weekday: ${visits.map((v) => `${v.day}=${v.visits}`).join(', ')}`
+        ? `Shopping Trips / Visits by Weekday: ${visits.map((v) => `${v.day}=${v.visits}`).join(', ')}`
         : '',
       monthlySpend.length
-        ? `Spend by month: ${monthlySpend.map((m) => `${m.period}=R${formatAnalysisNumber(m.spent)} (cum R${formatAnalysisNumber(m.cumulative)})`).join('; ')}`
+        ? `Monthly Spend Progression: ${monthlySpend.map((m) => `${m.period}=R${formatAnalysisNumber(m.spent)} (cum R${formatAnalysisNumber(m.cumulative)})`).join('; ')}`
         : '',
       popular.length
-        ? `Top items by volume: ${popular.map((p) => `"${p.item}" (${formatAnalysisNumber(p.purchases)})`).join(', ')}`
+        ? `Top Popular Items by Quantity Purchased: ${popular.map((p) => `"${p.item}" (${formatAnalysisNumber(p.purchases)} units)`).join(', ')}`
         : '',
     ]
       .filter(Boolean)
@@ -620,13 +597,13 @@ export const buildGlobalKnowledgeContext = (documents: KnowledgeDocument[]): str
   }
 
   return [
-    `=== GLOBAL KNOWLEDGE BASE SNAPSHOT (${readyDocuments.length} IMPORTED FILES) ===`,
+    `=== GLOBAL KNOWLEDGE BASE SNAPSHOT (${readyDocuments.length} IMPORTED FILES, ${ sortedLedger.length } UNIQUE PRODUCTS) ===`,
     retailRollup,
-    masterItemLines.length
-      ? `Complete Master Product & Item Ledger (${masterItemLines.length} unique products across all files):\n${masterItemLines.join('\n')}`
+    validForecastLines.length
+      ? `Products Eligible for OLS Price Forecasting (3+ distinct invoice dates, ${validForecastLines.length} shown):\n${validForecastLines.join('\n')}`
       : '',
-    invoiceSummaries.length
-      ? `All Imported Files / Invoices (${invoiceSummaries.length}):\n${invoiceSummaries.join('\n')}`
+    combinedTopLedgerLines.length
+      ? `Key Products in Master Ledger (showing top ${combinedTopLedgerLines.length} of ${sortedLedger.length} unique products by spend & volume; use search_knowledge_base or create_table_or_file for any other specific item):\n${combinedTopLedgerLines.join('\n')}`
       : '',
   ]
     .filter(Boolean)
@@ -637,20 +614,64 @@ export const searchDocuments = (documents: KnowledgeDocument[], query: string): 
   const readyDocuments = documents.filter((document) => document.status === 'ready');
   if (!readyDocuments.length) return '';
 
-  const documentChunks = readyDocuments.flatMap((document) =>
-    splitIntoChunks(document.content).map((text) => ({ name: document.name, text }))
+  const datasets = getStructuredDatasets(readyDocuments).filter(
+    (dataset) => !dataset.error && dataset.rows.length > 0
   );
-  if (!documentChunks.length) return '';
+  const fullLedger = buildMasterItemLedger(datasets);
 
   const directTerms = new Set(
     query
       .toLowerCase()
-      .match(/[\p{L}\p{N}]{2,}/gu)
+      .match(/[\p{L}\p{N}/]{2,}/gu)
       ?.filter((term) => !STOP_WORDS.has(term)) ?? []
   );
   const { expandedTerms } = expandQueryWithSynonyms(query);
   const terms = expandedTerms.filter(
     (term) => term.length >= 2 && !STOP_WORDS.has(term)
+  );
+
+  // Find exact and synonym-matched products from the full 334-product ledger
+  const productFilter = extractProductSearchFilter(query, readyDocuments);
+  const directFilterTokens = productFilter
+    ? productFilter.split(/\s+/).filter((t) => t.length >= 3)
+    : [];
+  const { expandedTerms: productSynonymTerms } = productFilter
+    ? expandQueryWithSynonyms(productFilter)
+    : { expandedTerms: [] as string[] };
+
+  const matchedLedgerEntries =
+    directFilterTokens.length > 0
+      ? fullLedger
+          .map((entry) => {
+            const target = `${entry.description} ${entry.barcode}`.toLowerCase();
+            const directHits = directFilterTokens.filter(
+              (tok) => target.includes(tok) || fuzzyTextMatchesTerm(target, tok)
+            ).length;
+            const synonymHits = productSynonymTerms.filter(
+              (tok) => tok.length >= 3 && (target.includes(tok) || fuzzyTextMatchesTerm(target, tok))
+            ).length;
+            return { entry, directHits, synonymHits };
+          })
+          .filter((item) => item.directHits > 0 || item.synonymHits > 0)
+          .sort(
+            (a, b) =>
+              b.directHits - a.directHits ||
+              b.synonymHits - a.synonymHits ||
+              b.entry.totalSpend - a.entry.totalSpend
+          )
+          .map((item) => item.entry)
+      : [];
+
+  const matchedLedgerSection =
+    matchedLedgerEntries.length > 0
+      ? [
+          `Exact Cross-File Product Ledger Matches (${matchedLedgerEntries.length} matching products across all ${readyDocuments.length} uploaded files):`,
+          ...matchedLedgerEntries.slice(0, 25).map(formatLedgerEntryLine),
+        ].join('\n')
+      : '';
+
+  const documentChunks = readyDocuments.flatMap((document) =>
+    splitIntoChunks(document.content).map((text) => ({ name: document.name, text }))
   );
 
   const matches = documentChunks
@@ -671,30 +692,26 @@ export const searchDocuments = (documents: KnowledgeDocument[], query: string): 
     })
     .filter((match) => match.score > 0)
     .sort((left, right) => right.score - left.score)
-    .slice(0, MAX_RETRIEVED_CHUNKS);
+    .slice(0, 12);
 
   const selectedChunks = matches.length > 0
     ? matches
     : isBroadAnalysisQuery(query)
-      ? Array.from({ length: Math.min(documentChunks.length, MAX_RETRIEVED_CHUNKS) }, (_, index) => {
+      ? Array.from({ length: Math.min(documentChunks.length, 8) }, (_, index) => {
           const sampleIndex =
-            documentChunks.length <= MAX_RETRIEVED_CHUNKS
+            documentChunks.length <= 8
               ? index
-              : Math.round(
-                  (index * (documentChunks.length - 1)) /
-                    (MAX_RETRIEVED_CHUNKS - 1)
-                );
+              : Math.round((index * (documentChunks.length - 1)) / 7);
           return documentChunks[sampleIndex];
         })
       : [];
 
-  const globalSnapshot = buildGlobalKnowledgeContext(readyDocuments);
   const textExcerpts = selectedChunks
     .map((match) => `Source: ${match.name}\n${match.text}`)
     .join('\n\n')
-    .slice(0, 6000);
+    .slice(0, 3500);
   const structuredAnalysis = summarizeStructuredDatasets(readyDocuments, query);
-  const wantsForecast = /\b(price|prices|forecast|forecasting|predict|prediction|future|projection|estimate|trend)\b/i.test(query);
+  const wantsForecast = /\b(price|prices|forecast|forecasting|predict|prediction|future|projection|estimate|trend|cost)\b/i.test(query);
   const priceForecasts = wantsForecast
     ? summarizePriceForecasts(readyDocuments, query)
     : '';
@@ -703,14 +720,14 @@ export const searchDocuments = (documents: KnowledgeDocument[], query: string): 
     : '';
 
   return [
-    'Currency convention: user confirms that monetary values in imported files are South African rand (ZAR); report monetary amounts as R and do not convert currencies.',
-    globalSnapshot,
-    textExcerpts,
-    structuredAnalysis ? `Full-dataset analysis:\n${structuredAnalysis.slice(0, 5000)}` : '',
+    'Currency convention: monetary values in imported files are South African rand (ZAR); report monetary amounts as R and do not convert currencies.',
+    matchedLedgerSection,
     priceForecasts,
     numericForecasts,
+    structuredAnalysis ? `Dataset summary:\n${structuredAnalysis.slice(0, 3000)}` : '',
+    textExcerpts,
   ]
     .filter(Boolean)
     .join('\n\n')
-    .slice(0, 32000);
+    .slice(0, 10000);
 };

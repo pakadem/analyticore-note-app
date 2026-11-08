@@ -157,6 +157,7 @@ const inferTableRequestArgs = (
 };
 
 const CHAT_SESSION_STORAGE_KEY = 'analyticore_chat_session_v1';
+const CHAT_CLEARED_INDEX_KEY = 'analyticore_chat_cleared_index_v1';
 
 const DEFAULT_WELCOME_MESSAGE: ChatMessage = {
   id: '1',
@@ -181,6 +182,16 @@ const loadSessionMessages = (): ChatMessage[] => {
   }
 };
 
+const loadClearedIndex = (): number => {
+  try {
+    const raw = sessionStorage.getItem(CHAT_CLEARED_INDEX_KEY);
+    const parsed = raw ? parseInt(raw, 10) : 0;
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+  } catch {
+    return 0;
+  }
+};
+
 export const AgentChatbox: React.FC<AgentChatboxProps> = ({
   apiConfig,
   documents,
@@ -191,6 +202,7 @@ export const AgentChatbox: React.FC<AgentChatboxProps> = ({
   const [input, setInput] = useState('');
   const [agentStatus, setAgentStatus] = useState<string | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>(() => loadSessionMessages());
+  const [clearedAtIndex, setClearedAtIndex] = useState<number>(() => loadClearedIndex());
 
   const readyDocs = useMemo(
     () => documents.filter((d) => d.status === 'ready'),
@@ -203,6 +215,32 @@ export const AgentChatbox: React.FC<AgentChatboxProps> = ({
     [documents]
   );
 
+  // Visible messages in the chat window (clearing only hides prior bubbles from view;
+  // full `messages` history and `globalKnowledgeContext` remain active for the model).
+  const visibleMessages = useMemo(() => {
+    if (clearedAtIndex <= 0) return messages;
+    const clampedIndex = Math.min(clearedAtIndex, messages.length);
+    const recentMessages = messages.slice(clampedIndex);
+    return [DEFAULT_WELCOME_MESSAGE, ...recentMessages];
+  }, [messages, clearedAtIndex]);
+
+  const retainedHistoryCount = useMemo(
+    () => messages.filter((m) => m.id !== '1').length,
+    [messages]
+  );
+
+  const hiddenHistoryCount = useMemo(() => {
+    if (clearedAtIndex <= 0) return 0;
+    return messages.slice(0, Math.min(clearedAtIndex, messages.length)).filter((m) => m.id !== '1')
+      .length;
+  }, [messages, clearedAtIndex]);
+
+  const handleClearChatView = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (agentStatus) return;
+    setClearedAtIndex(messages.length);
+  };
+
   useEffect(() => {
     try {
       const serializable = messages.map(({ artifacts, ...rest }) => ({
@@ -214,6 +252,14 @@ export const AgentChatbox: React.FC<AgentChatboxProps> = ({
       // Ignore sessionStorage quota errors
     }
   }, [messages]);
+
+  useEffect(() => {
+    try {
+      sessionStorage.setItem(CHAT_CLEARED_INDEX_KEY, String(clearedAtIndex));
+    } catch {
+      // Ignore sessionStorage errors
+    }
+  }, [clearedAtIndex]);
 
   const handleDownloadArtifact = (
     artifact: GeneratedFileArtifact,
@@ -403,13 +449,24 @@ export const AgentChatbox: React.FC<AgentChatboxProps> = ({
 
       // Autonomous planner fallback for models without Ollama native `tools` support (e.g. llama3:8b)
       if (!nativeToolsSupported) {
-        setAgentStatus('Understanding intent & synonyms...');
-        const intentPlan = await refineIntentWithLLM(
-          ollama,
-          apiConfig.modelName,
-          retrievalQuery,
-          baseIntentPlan
+        const hasDeterministicIntent = Boolean(
+          baseIntentPlan.targetTab ||
+            baseIntentPlan.wantsTableOrFile ||
+            baseIntentPlan.wantsClustering ||
+            baseIntentPlan.wantsRegression ||
+            baseIntentPlan.wantsForecast ||
+            baseIntentPlan.wantsRetailMetrics ||
+            baseIntentPlan.searchFilter
         );
+        setAgentStatus('Understanding intent & synonyms...');
+        const intentPlan = hasDeterministicIntent
+          ? baseIntentPlan
+          : await refineIntentWithLLM(
+              ollama,
+              apiConfig.modelName,
+              retrievalQuery,
+              baseIntentPlan
+            );
         const toolResults: string[] = [];
 
         if (intentPlan.targetTab) {
@@ -429,29 +486,52 @@ export const AgentChatbox: React.FC<AgentChatboxProps> = ({
           toolResults.push(`Tool [create_table_or_file]:\n${tableResult}`);
         }
 
-        if (intentPlan.wantsClustering) {
-          const clusterResult = await runToolAndRecord('run_kmeans_clustering', {});
+        if (intentPlan.wantsClustering && readyDocs.length > 0) {
+          const clusterResult = await runToolAndRecord('run_kmeans_clustering', {
+            datasetName: intentPlan.datasetName,
+          });
           toolResults.push(`Tool [run_kmeans_clustering]:\n${clusterResult}`);
         }
 
-        if (intentPlan.wantsForecast) {
+        if (intentPlan.wantsRegression && readyDocs.length > 0) {
+          const regressionResult = await runToolAndRecord('run_linear_regression', {
+            datasetName: intentPlan.datasetName,
+            targetColumn: intentPlan.regressionTargetColumn ?? 'TOTAL INC',
+          });
+          toolResults.push(`Tool [run_linear_regression]:\n${regressionResult}`);
+        }
+
+        if (intentPlan.wantsForecast && readyDocs.length > 0) {
           const priceResult = await runToolAndRecord('forecast_product_prices', {
             product: intentPlan.searchFilter,
           });
           toolResults.push(`Tool [forecast_product_prices]:\n${priceResult}`);
         }
 
-        if (intentPlan.wantsRetailMetrics) {
+        if (intentPlan.wantsRetailMetrics && readyDocs.length > 0) {
           const retailResult = await runToolAndRecord('analyze_retail_metrics', {
             grouping: intentPlan.retailGrouping,
+            datasetName: intentPlan.datasetName,
           });
           toolResults.push(`Tool [analyze_retail_metrics]:\n${retailResult}`);
         }
 
-        const kbResult = await runToolAndRecord('search_knowledge_base', {
-          query: intentPlan.expandedQuery,
-        });
-        toolResults.push(`Tool [search_knowledge_base]:\n${kbResult}`);
+        const isPureNavigation = Boolean(
+          intentPlan.targetTab &&
+            !intentPlan.wantsTableOrFile &&
+            !intentPlan.wantsClustering &&
+            !intentPlan.wantsRegression &&
+            !intentPlan.wantsForecast &&
+            !intentPlan.wantsRetailMetrics &&
+            !intentPlan.searchFilter
+        );
+
+        if (!isPureNavigation && readyDocs.length > 0) {
+          const kbResult = await runToolAndRecord('search_knowledge_base', {
+            query: intentPlan.expandedQuery,
+          });
+          toolResults.push(`Tool [search_knowledge_base]:\n${kbResult}`);
+        }
 
         setAgentStatus('Synthesizing findings...');
         const fallbackResponse = await ollama.chat({
@@ -477,38 +557,97 @@ export const AgentChatbox: React.FC<AgentChatboxProps> = ({
         });
         finalAnswer = fallbackResponse.message.content.trim();
       } else {
-        if (baseIntentPlan.wantsTableOrFile && generatedArtifacts.length === 0 && readyDocs.length > 0) {
-          const tableArgs = inferTableRequestArgs(retrievalQuery, readyDocs);
-          await runToolAndRecord('create_table_or_file', tableArgs);
+        const supplementalOutputs: string[] = [];
+        const wasToolCalled = (toolName: string) =>
+          executedTools.some((t) => t.name === toolName);
+
+        if (baseIntentPlan.targetTab && !wasToolCalled('switch_app_view')) {
+          const out = await runToolAndRecord('switch_app_view', {
+            tab: baseIntentPlan.targetTab,
+          });
+          supplementalOutputs.push(`Tool [switch_app_view]:\n${out}`);
         }
 
-        if (executedTools.length === 0 && readyDocs.length > 0) {
-          // If a native-tool model answered without calling any tool when documents exist, ensure grounded retrieval
-          const fallbackContext = searchDocuments(documents, baseIntentPlan.expandedQuery);
-          if (fallbackContext) {
-            const kbOutput = await runToolAndRecord('search_knowledge_base', {
-              query: baseIntentPlan.expandedQuery,
-            });
-            const retryResponse = await ollama.chat({
-              model: apiConfig.modelName,
-              messages: [
-                { role: 'system', content: systemPromptWithGlobalContext },
-                ...sessionHistory,
-                {
-                  role: 'user',
-                  content: [
-                    ...userPromptParts,
-                    `Retrieved context:\n${kbOutput}`,
-                  ].join('\n\n'),
-                },
-              ],
-              options: {
-                temperature: apiConfig.temperature,
-                num_ctx: apiConfig.contextWindow,
+        if (
+          baseIntentPlan.wantsTableOrFile &&
+          generatedArtifacts.length === 0 &&
+          readyDocs.length > 0
+        ) {
+          const tableArgs = inferTableRequestArgs(
+            retrievalQuery,
+            readyDocs,
+            baseIntentPlan.searchFilter
+          );
+          const out = await runToolAndRecord('create_table_or_file', tableArgs);
+          supplementalOutputs.push(`Tool [create_table_or_file]:\n${out}`);
+        }
+
+        if (
+          baseIntentPlan.wantsClustering &&
+          !wasToolCalled('run_kmeans_clustering') &&
+          readyDocs.length > 0
+        ) {
+          const out = await runToolAndRecord('run_kmeans_clustering', {
+            datasetName: baseIntentPlan.datasetName,
+          });
+          supplementalOutputs.push(`Tool [run_kmeans_clustering]:\n${out}`);
+        }
+
+        if (
+          baseIntentPlan.wantsRegression &&
+          !wasToolCalled('run_linear_regression') &&
+          readyDocs.length > 0
+        ) {
+          const out = await runToolAndRecord('run_linear_regression', {
+            datasetName: baseIntentPlan.datasetName,
+            targetColumn: baseIntentPlan.regressionTargetColumn ?? 'TOTAL INC',
+          });
+          supplementalOutputs.push(`Tool [run_linear_regression]:\n${out}`);
+        }
+
+        if (
+          baseIntentPlan.wantsForecast &&
+          !wasToolCalled('forecast_product_prices') &&
+          readyDocs.length > 0
+        ) {
+          const out = await runToolAndRecord('forecast_product_prices', {
+            product: baseIntentPlan.searchFilter,
+          });
+          supplementalOutputs.push(`Tool [forecast_product_prices]:\n${out}`);
+        }
+
+        if (
+          executedTools.length === 0 &&
+          readyDocs.length > 0 &&
+          !baseIntentPlan.targetTab
+        ) {
+          const kbOutput = await runToolAndRecord('search_knowledge_base', {
+            query: baseIntentPlan.expandedQuery,
+          });
+          supplementalOutputs.push(`Tool [search_knowledge_base]:\n${kbOutput}`);
+        }
+
+        if (supplementalOutputs.length > 0) {
+          setAgentStatus('Synthesizing findings...');
+          const retryResponse = await ollama.chat({
+            model: apiConfig.modelName,
+            messages: [
+              { role: 'system', content: systemPromptWithGlobalContext },
+              ...sessionHistory,
+              {
+                role: 'user',
+                content: [
+                  ...userPromptParts,
+                  `Tool execution results:\n${supplementalOutputs.join('\n\n')}`,
+                ].join('\n\n'),
               },
-            });
-            finalAnswer = retryResponse.message.content.trim();
-          }
+            ],
+            options: {
+              temperature: apiConfig.temperature,
+              num_ctx: apiConfig.contextWindow,
+            },
+          });
+          finalAnswer = retryResponse.message.content.trim();
         }
       }
 
@@ -584,27 +723,50 @@ export const AgentChatbox: React.FC<AgentChatboxProps> = ({
             📚 {readyDocs.length} files in context
           </span>
         </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
           {isOpen && (
-            <button
-              type="button"
-              onClick={(e) => {
-                e.stopPropagation();
-                setIsExpanded((prev) => !prev);
-              }}
-              title={isExpanded ? 'Compact view' : 'Expand for wide tables'}
-              style={{
-                background: 'rgba(255, 255, 255, 0.12)',
-                border: 'none',
-                color: '#e2e8f0',
-                borderRadius: '4px',
-                padding: '2px 6px',
-                fontSize: '0.72rem',
-                cursor: 'pointer',
-              }}
-            >
-              {isExpanded ? '⤡ Compact' : '⤢ Expand'}
-            </button>
+            <>
+              <button
+                type="button"
+                onClick={handleClearChatView}
+                disabled={Boolean(agentStatus) || visibleMessages.length <= 1}
+                title={`Clear visible chat screen without removing history (${retainedHistoryCount} messages) or file context (${readyDocs.length} files)`}
+                style={{
+                  background: 'rgba(255, 255, 255, 0.12)',
+                  border: 'none',
+                  color:
+                    Boolean(agentStatus) || visibleMessages.length <= 1 ? '#64748b' : '#e2e8f0',
+                  borderRadius: '4px',
+                  padding: '2px 6px',
+                  fontSize: '0.72rem',
+                  cursor:
+                    Boolean(agentStatus) || visibleMessages.length <= 1
+                      ? 'not-allowed'
+                      : 'pointer',
+                }}
+              >
+                🧹 Clear
+              </button>
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setIsExpanded((prev) => !prev);
+                }}
+                title={isExpanded ? 'Compact view' : 'Expand for wide tables'}
+                style={{
+                  background: 'rgba(255, 255, 255, 0.12)',
+                  border: 'none',
+                  color: '#e2e8f0',
+                  borderRadius: '4px',
+                  padding: '2px 6px',
+                  fontSize: '0.72rem',
+                  cursor: 'pointer',
+                }}
+              >
+                {isExpanded ? '⤡ Compact' : '⤢ Expand'}
+              </button>
+            </>
           )}
           <span style={{ fontSize: '0.75rem', color: '#94a3b8' }}>{isOpen ? '▼' : '▲'}</span>
         </div>
@@ -623,7 +785,45 @@ export const AgentChatbox: React.FC<AgentChatboxProps> = ({
               gap: '12px',
             }}
           >
-            {messages.map((m) => {
+            {hiddenHistoryCount > 0 && (
+              <div
+                style={{
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  alignItems: 'center',
+                  gap: '8px',
+                  padding: '6px 10px',
+                  backgroundColor: '#f8fafc',
+                  border: '1px solid #e2e8f0',
+                  borderRadius: '8px',
+                  fontSize: '0.72rem',
+                  color: '#475569',
+                }}
+              >
+                <span>
+                  🧠 Chat screen cleared • <strong>{hiddenHistoryCount}</strong> prior message
+                  {hiddenHistoryCount === 1 ? '' : 's'} &amp;{' '}
+                  <strong>{readyDocs.length}</strong> files remain active in context
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setClearedAtIndex(0)}
+                  style={{
+                    background: 'none',
+                    border: 'none',
+                    color: '#0284c7',
+                    fontWeight: 600,
+                    fontSize: '0.72rem',
+                    cursor: 'pointer',
+                    padding: 0,
+                    whiteSpace: 'nowrap',
+                  }}
+                >
+                  Show history
+                </button>
+              </div>
+            )}
+            {visibleMessages.map((m) => {
               const segments =
                 m.role === 'assistant'
                   ? parseMarkdownTableSegments(m.content)
