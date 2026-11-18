@@ -6,6 +6,7 @@ import {
   GeneratedFileArtifact,
   KnowledgeDocument,
   NavTab,
+  UserRole,
 } from '../types/app';
 import {
   buildGlobalKnowledgeContext,
@@ -24,6 +25,8 @@ import {
 interface AgentChatboxProps {
   apiConfig: ApiConfig;
   documents: KnowledgeDocument[];
+  userId?: string;
+  userRole?: UserRole;
   onSelectTab?: (tab: NavTab) => void;
 }
 
@@ -156,8 +159,10 @@ const inferTableRequestArgs = (
   };
 };
 
-const CHAT_SESSION_STORAGE_KEY = 'analyticore_chat_session_v1';
-const CHAT_CLEARED_INDEX_KEY = 'analyticore_chat_cleared_index_v1';
+const getChatSessionKey = (userId?: string) =>
+  userId ? `analyticore_chat_session_v1_${userId}` : 'analyticore_chat_session_v1';
+const getChatClearedIndexKey = (userId?: string) =>
+  userId ? `analyticore_chat_cleared_index_v1_${userId}` : 'analyticore_chat_cleared_index_v1';
 
 const DEFAULT_WELCOME_MESSAGE: ChatMessage = {
   id: '1',
@@ -167,9 +172,9 @@ const DEFAULT_WELCOME_MESSAGE: ChatMessage = {
   timestamp: new Date(),
 };
 
-const loadSessionMessages = (): ChatMessage[] => {
+const loadSessionMessages = (userId?: string): ChatMessage[] => {
   try {
-    const raw = sessionStorage.getItem(CHAT_SESSION_STORAGE_KEY);
+    const raw = sessionStorage.getItem(getChatSessionKey(userId));
     if (!raw) return [DEFAULT_WELCOME_MESSAGE];
     const parsed = JSON.parse(raw) as Array<Omit<ChatMessage, 'timestamp'> & { timestamp: string }>;
     if (!Array.isArray(parsed) || parsed.length === 0) return [DEFAULT_WELCOME_MESSAGE];
@@ -182,9 +187,9 @@ const loadSessionMessages = (): ChatMessage[] => {
   }
 };
 
-const loadClearedIndex = (): number => {
+const loadClearedIndex = (userId?: string): number => {
   try {
-    const raw = sessionStorage.getItem(CHAT_CLEARED_INDEX_KEY);
+    const raw = sessionStorage.getItem(getChatClearedIndexKey(userId));
     const parsed = raw ? parseInt(raw, 10) : 0;
     return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
   } catch {
@@ -195,14 +200,16 @@ const loadClearedIndex = (): number => {
 export const AgentChatbox: React.FC<AgentChatboxProps> = ({
   apiConfig,
   documents,
+  userId,
+  userRole,
   onSelectTab,
 }) => {
   const [isOpen, setIsOpen] = useState(true);
   const [isExpanded, setIsExpanded] = useState(false);
   const [input, setInput] = useState('');
   const [agentStatus, setAgentStatus] = useState<string | null>(null);
-  const [messages, setMessages] = useState<ChatMessage[]>(() => loadSessionMessages());
-  const [clearedAtIndex, setClearedAtIndex] = useState<number>(() => loadClearedIndex());
+  const [messages, setMessages] = useState<ChatMessage[]>(() => loadSessionMessages(userId));
+  const [clearedAtIndex, setClearedAtIndex] = useState<number>(() => loadClearedIndex(userId));
 
   const readyDocs = useMemo(
     () => documents.filter((d) => d.status === 'ready'),
@@ -247,19 +254,19 @@ export const AgentChatbox: React.FC<AgentChatboxProps> = ({
         ...rest,
         artifacts: artifacts?.map(({ binaryContent, ...artRest }) => artRest),
       }));
-      sessionStorage.setItem(CHAT_SESSION_STORAGE_KEY, JSON.stringify(serializable));
+      sessionStorage.setItem(getChatSessionKey(userId), JSON.stringify(serializable));
     } catch {
       // Ignore sessionStorage quota errors
     }
-  }, [messages]);
+  }, [messages, userId]);
 
   useEffect(() => {
     try {
-      sessionStorage.setItem(CHAT_CLEARED_INDEX_KEY, String(clearedAtIndex));
+      sessionStorage.setItem(getChatClearedIndexKey(userId), String(clearedAtIndex));
     } catch {
       // Ignore sessionStorage errors
     }
-  }, [clearedAtIndex]);
+  }, [clearedAtIndex, userId]);
 
   const handleDownloadArtifact = (
     artifact: GeneratedFileArtifact,
@@ -355,6 +362,7 @@ export const AgentChatbox: React.FC<AgentChatboxProps> = ({
       setAgentStatus(`Running tool: ${name}...`);
       const output = await executeAgentTool(name, args, {
         documents,
+        userRole,
         onSelectTab,
         onArtifactCreated: (artifact) => {
           generatedArtifacts.push(artifact);

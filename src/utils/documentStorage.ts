@@ -10,13 +10,24 @@ const DATABASE_VERSION = 1;
 const DOCUMENTS_STORE = 'documents';
 const persistedDocumentIds = new Set<string>();
 
+export const resetDocumentStorageCache = (): void => {
+  persistedDocumentIds.clear();
+};
+
 const requestJson = async <T>(url: string, init?: RequestInit): Promise<T> => {
   let response: Response;
   try {
-    response = await fetch(url, init);
+    response = await fetch(url, {
+      credentials: 'same-origin',
+      ...init,
+    });
   } catch (error) {
     const detail = error instanceof Error ? error.message : 'Network request failed.';
     throw new Error(`Unable to reach the local document database API. Start the app with "npm run dev". ${detail}`);
+  }
+
+  if (response.status === 204) {
+    return undefined as T;
   }
 
   const body: unknown = await response.json().catch(() => null);
@@ -96,7 +107,9 @@ const updateDocument = async (document: KnowledgeDocument): Promise<void> => {
 };
 
 const fetchStoredFile = async (documentId: string): Promise<Blob> => {
-  const response = await fetch(`/api/documents/${encodeURIComponent(documentId)}/file`);
+  const response = await fetch(`/api/documents/${encodeURIComponent(documentId)}/file`, {
+    credentials: 'same-origin',
+  });
   if (!response.ok) {
     const body: unknown = await response.json().catch(() => null);
     const message =
@@ -108,26 +121,31 @@ const fetchStoredFile = async (documentId: string): Promise<Blob> => {
   return response.blob();
 };
 
-export const loadStoredDocuments = async (): Promise<KnowledgeDocument[]> => {
+export const loadStoredDocuments = async (canWrite = true): Promise<KnowledgeDocument[]> => {
+  persistedDocumentIds.clear();
   let documents = (
     await requestJson<Array<Omit<KnowledgeDocument, 'uploadDate'> & { uploadDate: string }>>('/api/documents')
   ).map(toKnowledgeDocument);
   documents.forEach((document) => persistedDocumentIds.add(document.id));
 
-  const existingIds = new Set(documents.map((document) => document.id));
-  const legacyDocuments = await loadLegacyDocuments();
-  for (const legacyDocument of legacyDocuments) {
-    if (!existingIds.has(legacyDocument.id)) {
-      await uploadDocument(legacyDocument);
-      existingIds.add(legacyDocument.id);
+  if (canWrite) {
+    const existingIds = new Set(documents.map((document) => document.id));
+    const legacyDocuments = await loadLegacyDocuments();
+    let migratedAny = false;
+    for (const legacyDocument of legacyDocuments) {
+      if (!existingIds.has(legacyDocument.id)) {
+        await uploadDocument(legacyDocument);
+        existingIds.add(legacyDocument.id);
+        migratedAny = true;
+      }
     }
-  }
 
-  if (legacyDocuments.length) {
-    documents = (
-      await requestJson<Array<Omit<KnowledgeDocument, 'uploadDate'> & { uploadDate: string }>>('/api/documents')
-    ).map(toKnowledgeDocument);
-    documents.forEach((document) => persistedDocumentIds.add(document.id));
+    if (migratedAny) {
+      documents = (
+        await requestJson<Array<Omit<KnowledgeDocument, 'uploadDate'> & { uploadDate: string }>>('/api/documents')
+      ).map(toKnowledgeDocument);
+      documents.forEach((document) => persistedDocumentIds.add(document.id));
+    }
   }
 
   const restoredDocuments: KnowledgeDocument[] = [];
@@ -138,7 +156,9 @@ export const loadStoredDocuments = async (): Promise<KnowledgeDocument[]> => {
         status: 'error' as const,
         error: 'Indexing stopped before the app closed. Download the file or upload it again to re-index.',
       };
-      await updateDocument(interruptedDocument);
+      if (canWrite) {
+        await updateDocument(interruptedDocument);
+      }
       restoredDocuments.push(interruptedDocument);
       continue;
     }
@@ -158,7 +178,9 @@ export const loadStoredDocuments = async (): Promise<KnowledgeDocument[]> => {
             content: restructured,
             tokenCount: Math.ceil(restructured.length / 4),
           };
-          await updateDocument(updatedDocument);
+          if (canWrite) {
+            await updateDocument(updatedDocument);
+          }
           restoredDocuments.push(updatedDocument);
           continue;
         }
@@ -179,7 +201,9 @@ export const loadStoredDocuments = async (): Promise<KnowledgeDocument[]> => {
         analyticsError: undefined,
         persistenceError: undefined,
       };
-      await updateDocument(refreshedDocument);
+      if (canWrite) {
+        await updateDocument(refreshedDocument);
+      }
       restoredDocuments.push(refreshedDocument);
     } catch (error) {
       restoredDocuments.push({
@@ -192,7 +216,7 @@ export const loadStoredDocuments = async (): Promise<KnowledgeDocument[]> => {
   return restoredDocuments;
 };
 
-export const saveStoredDocument = async (document: KnowledgeDocument): Promise<void> => {
+export const saveStoredDocument = async (document: KnowledgeDocument): Promise<KnowledgeDocument | void> => {
   if (!persistedDocumentIds.has(document.id)) {
     await uploadDocument(document);
     return;

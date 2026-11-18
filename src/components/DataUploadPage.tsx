@@ -9,6 +9,7 @@ import {
 
 interface DataUploadPageProps {
   documents: KnowledgeDocument[];
+  canWrite: boolean;
   onDocumentsChange: React.Dispatch<React.SetStateAction<KnowledgeDocument[]>>;
   onPersistDocument: (document: KnowledgeDocument) => Promise<KnowledgeDocument>;
   onDeleteDocument: (documentId: string) => Promise<void>;
@@ -27,6 +28,7 @@ const downloadDocument = (document: KnowledgeDocument) => {
 
 export const DataUploadPage: React.FC<DataUploadPageProps> = ({
   documents,
+  canWrite,
   onDocumentsChange,
   onPersistDocument,
   onDeleteDocument,
@@ -79,7 +81,9 @@ export const DataUploadPage: React.FC<DataUploadPageProps> = ({
     try {
       let fileBlob = document.file;
       if (!fileBlob && document.hasFile) {
-        const response = await fetch(`/api/documents/${encodeURIComponent(document.id)}/file`);
+        const response = await fetch(`/api/documents/${encodeURIComponent(document.id)}/file`, {
+          credentials: 'same-origin',
+        });
         if (!response.ok) {
           const result: unknown = await response.json().catch(() => null);
           const message =
@@ -123,7 +127,9 @@ export const DataUploadPage: React.FC<DataUploadPageProps> = ({
         return;
       }
 
-      const response = await fetch(`/api/documents/${encodeURIComponent(document.id)}/file`);
+      const response = await fetch(`/api/documents/${encodeURIComponent(document.id)}/file`, {
+        credentials: 'same-origin',
+      });
       if (!response.ok) {
         const result: unknown = await response.json().catch(() => null);
         const message =
@@ -148,6 +154,7 @@ export const DataUploadPage: React.FC<DataUploadPageProps> = ({
   };
 
   const handleDelete = async (document: KnowledgeDocument) => {
+    if (!canWrite) return;
     if (document.status === 'indexing' || deletingDocumentIds.has(document.id)) return;
     if (!window.confirm(`Delete "${document.name}" and its stored data? This cannot be undone.`)) return;
 
@@ -169,6 +176,10 @@ export const DataUploadPage: React.FC<DataUploadPageProps> = ({
   };
 
   const handleFileUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
+    if (!canWrite) {
+      event.target.value = '';
+      return;
+    }
     const files = Array.from(event.target.files ?? []);
     event.target.value = '';
 
@@ -250,44 +261,60 @@ export const DataUploadPage: React.FC<DataUploadPageProps> = ({
         </p>
       </div>
 
-      <div
-        style={{
-          border: '2px dashed #cbd5e1',
-          borderRadius: '12px',
-          padding: '40px',
-          textAlign: 'center',
-          backgroundColor: '#ffffff',
-          boxShadow: '0 1px 3px rgba(0,0,0,0.05)',
-        }}
-      >
-        <div style={{ fontSize: '2.5rem', marginBottom: '12px' }}>📂</div>
-        <h3 style={{ fontSize: '1.125rem', fontWeight: 'bold' }}>Upload Files for AI Retrieval</h3>
-        <p style={{ color: '#64748b', fontSize: '0.875rem', marginTop: '4px' }}>
-          Supports selectable-text PDF, CSV, and TXT files up to 50 MB
-        </p>
-        <label
+      {canWrite ? (
+        <div
           style={{
-            display: 'inline-block',
-            marginTop: '20px',
-            padding: '10px 20px',
-            backgroundColor: '#0284c7',
-            color: '#ffffff',
-            borderRadius: '8px',
-            fontWeight: '600',
-            cursor: 'pointer',
+            border: '2px dashed #cbd5e1',
+            borderRadius: '12px',
+            padding: '40px',
+            textAlign: 'center',
+            backgroundColor: '#ffffff',
+            boxShadow: '0 1px 3px rgba(0,0,0,0.05)',
+          }}
+        >
+          <div style={{ fontSize: '2.5rem', marginBottom: '12px' }}>📂</div>
+          <h3 style={{ fontSize: '1.125rem', fontWeight: 'bold' }}>Upload Files for AI Retrieval</h3>
+          <p style={{ color: '#64748b', fontSize: '0.875rem', marginTop: '4px' }}>
+            Supports selectable-text PDF, CSV, and TXT files up to 50 MB
+          </p>
+          <label
+            style={{
+              display: 'inline-block',
+              marginTop: '20px',
+              padding: '10px 20px',
+              backgroundColor: '#0284c7',
+              color: '#ffffff',
+              borderRadius: '8px',
+              fontWeight: '600',
+              cursor: 'pointer',
+              fontSize: '0.875rem',
+            }}
+          >
+            Select Files
+            <input
+              type="file"
+              accept=".pdf,.csv,.txt"
+              multiple
+              onChange={handleFileUpload}
+              style={{ display: 'none' }}
+            />
+          </label>
+        </div>
+      ) : (
+        <div
+          role="status"
+          style={{
+            padding: '16px 20px',
+            borderRadius: '12px',
+            backgroundColor: '#f8fafc',
+            border: '1px solid #cbd5e1',
+            color: '#334155',
             fontSize: '0.875rem',
           }}
         >
-          Select Files
-          <input
-            type="file"
-            accept=".pdf,.csv,.txt"
-            multiple
-            onChange={handleFileUpload}
-            style={{ display: 'none' }}
-          />
-        </label>
-      </div>
+          <strong>🔒 View-Only Access:</strong> Your account can preview and download ingested documents, but uploading or deleting files requires a <strong>Writer</strong> or <strong>Admin</strong> role.
+        </div>
+      )}
 
       <div style={{ backgroundColor: '#ffffff', borderRadius: '12px', border: '1px solid #e2e8f0', padding: '20px' }}>
         <h3 style={{ fontSize: '1rem', fontWeight: 'bold', marginBottom: '16px' }}>Ingested Knowledge Base</h3>
@@ -381,25 +408,27 @@ export const DataUploadPage: React.FC<DataUploadPageProps> = ({
                     >
                       View
                     </button>
-                    <button
-                      type="button"
-                      onClick={() => void handleDelete(doc)}
-                      disabled={doc.status === 'indexing' || deletingDocumentIds.has(doc.id)}
-                      aria-label={`Delete ${doc.name}`}
-                      style={{
-                        padding: '6px 10px',
-                        backgroundColor: '#fee2e2',
-                        color: '#991b1b',
-                        border: 0,
-                        borderRadius: '6px',
-                        cursor: doc.status === 'indexing' || deletingDocumentIds.has(doc.id)
-                          ? 'not-allowed'
-                          : 'pointer',
-                        opacity: doc.status === 'indexing' || deletingDocumentIds.has(doc.id) ? 0.6 : 1,
-                      }}
-                    >
-                      {deletingDocumentIds.has(doc.id) ? 'Deleting…' : 'Delete'}
-                    </button>
+                    {canWrite && (
+                      <button
+                        type="button"
+                        onClick={() => void handleDelete(doc)}
+                        disabled={doc.status === 'indexing' || deletingDocumentIds.has(doc.id)}
+                        aria-label={`Delete ${doc.name}`}
+                        style={{
+                          padding: '6px 10px',
+                          backgroundColor: '#fee2e2',
+                          color: '#991b1b',
+                          border: 0,
+                          borderRadius: '6px',
+                          cursor: doc.status === 'indexing' || deletingDocumentIds.has(doc.id)
+                            ? 'not-allowed'
+                            : 'pointer',
+                          opacity: doc.status === 'indexing' || deletingDocumentIds.has(doc.id) ? 0.6 : 1,
+                        }}
+                      >
+                        {deletingDocumentIds.has(doc.id) ? 'Deleting…' : 'Delete'}
+                      </button>
+                    )}
                   </td>
                 </tr>
               ))

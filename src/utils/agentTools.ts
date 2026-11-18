@@ -1,5 +1,5 @@
 import type { Tool } from 'ollama/browser';
-import type { GeneratedFileArtifact, KnowledgeDocument, NavTab } from '../types/app';
+import type { GeneratedFileArtifact, KnowledgeDocument, NavTab, UserRole } from '../types/app';
 import {
   classifyRows,
   getCsvNumber,
@@ -30,6 +30,7 @@ export interface AgentToolCallRecord {
 
 export interface AgentToolContext {
   documents: KnowledgeDocument[];
+  userRole?: UserRole;
   onSelectTab?: (tab: NavTab) => void;
   onArtifactCreated?: (artifact: GeneratedFileArtifact) => void;
 }
@@ -152,14 +153,14 @@ export const AGENT_TOOLS: Tool[] = [
     function: {
       name: 'switch_app_view',
       description:
-        'Navigate the AnalytiCore application UI to a specific view: "home" (Dashboard & Analytics), "upload" (Data Ingestion), or "api" (API & Model Setup).',
+        'Navigate the AnalytiCore application UI to a specific view: "home" (Dashboard & Analytics), "upload" (Data Ingestion), "api" (API & Model Setup), "profile" (My Profile), or "users" (User Administration, Admin only).',
       parameters: {
         type: 'object',
         required: ['tab'],
         properties: {
           tab: {
             type: 'string',
-            enum: ['home', 'upload', 'api'],
+            enum: ['home', 'upload', 'api', 'profile', 'users'],
             description: 'Target navigation tab.',
           },
         },
@@ -681,7 +682,12 @@ export const executeAgentTool = async (
 
     case 'switch_app_view': {
       const tab = String(args.tab ?? '').toLowerCase();
-      if (tab === 'home' || tab === 'upload' || tab === 'api') {
+      if (tab === 'users' && context.userRole && context.userRole !== 'admin') {
+        return JSON.stringify({
+          error: 'User Administration requires Administrator privileges.',
+        });
+      }
+      if (tab === 'home' || tab === 'upload' || tab === 'api' || tab === 'profile' || tab === 'users') {
         context.onSelectTab?.(tab);
         return JSON.stringify({
           status: 'ok',
@@ -689,7 +695,7 @@ export const executeAgentTool = async (
         });
       }
       return JSON.stringify({
-        error: 'Invalid tab. Must be one of: "home", "upload", "api".',
+        error: 'Invalid tab. Must be one of: "home", "upload", "api", "profile", "users".',
       });
     }
 

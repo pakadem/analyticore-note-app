@@ -1,10 +1,27 @@
-export type NavTab = 'home' | 'upload' | 'api';
+export type UserRole = 'admin' | 'writer' | 'viewer';
+
+export type NavTab = 'home' | 'upload' | 'api' | 'profile' | 'users';
+
+export interface UserAccount {
+  id: string;
+  username: string;
+  email: string;
+  fullName: string;
+  jobTitle: string;
+  bio: string;
+  role: UserRole;
+  isActive: boolean;
+  lastLoginAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
 
 export interface NavigationItem {
   id: NavTab;
   label: string;
   description: string;
   iconKey: string;
+  adminOnly?: boolean;
 }
 
 export interface DocumentFile {

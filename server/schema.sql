@@ -29,3 +29,36 @@ CREATE TABLE IF NOT EXISTS document_chunks (
   CONSTRAINT document_chunks_document_fk
     FOREIGN KEY (document_id) REFERENCES documents (id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+
+CREATE TABLE IF NOT EXISTS users (
+  id CHAR(36) NOT NULL,
+  username VARCHAR(64) NOT NULL,
+  email VARCHAR(255) NOT NULL,
+  full_name VARCHAR(120) NOT NULL,
+  job_title VARCHAR(120) NULL,
+  bio TEXT NULL,
+  password_hash VARCHAR(255) NOT NULL,
+  role ENUM('admin', 'writer', 'viewer') NOT NULL DEFAULT 'viewer',
+  is_active TINYINT(1) NOT NULL DEFAULT 1,
+  last_login_at DATETIME(3) NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  UNIQUE KEY users_username_uq (username),
+  UNIQUE KEY users_email_uq (email),
+  INDEX users_role_idx (role)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+
+CREATE TABLE IF NOT EXISTS user_sessions (
+  id CHAR(36) NOT NULL,
+  user_id CHAR(36) NOT NULL,
+  token_hash CHAR(64) NOT NULL,
+  expires_at DATETIME(3) NOT NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  UNIQUE KEY user_sessions_token_uq (token_hash),
+  INDEX user_sessions_user_idx (user_id),
+  INDEX user_sessions_expires_idx (expires_at),
+  CONSTRAINT user_sessions_user_fk
+    FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;

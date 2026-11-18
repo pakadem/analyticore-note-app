@@ -7,7 +7,13 @@ A modern, high-performance note application built with **React**, **TypeScript**
    - **Dashboard & Analytics**: Live uploaded-file metrics, store visits by weekday, spend progression, best-selling items, K-means clustering, and linear regression forecasts for structured uploaded data and cross-file product price history.
    - **Data Ingestion**: Upload PDF, CSV, and TXT files up to 50MB. Extracted text is searchable by the assistant while the app is open.
    - **API & Model Setup**: Configuration for an Ollama-compatible endpoint and model, temperature, and context window.
-2. **Interactive Llama 3 Agent Chatbox**:
+   - **My Profile**: Personal profile details, password management, and role permission matrix.
+   - **User Administration (Admin Only)**: Create, update, suspend, reset passwords, and manage accounts across three role tiers.
+2. **Role-Based Authentication (3 User Layers)**:
+   - **Admin (`admin`)**: Full administration rights—can manage all documents, configure LLM settings, and create/manage user accounts.
+   - **Writer (`writer`)**: Can perform application actions (upload/delete documents, configure LLM settings, run AI analysis/exports, update own profile), **cannot** create or manage users.
+   - **View (`viewer`)**: Read-only access—can view analytics dashboards, preview/download documents, query the AI analyst, and manage their own profile/password, **without** write permissions to upload/delete files or modify app settings.
+3. **Interactive Llama 3 Agent Chatbox**:
    - Floating chat widget available across all views.
    - Searches uploaded document text locally before each answer and supplies at most five matching chunks plus summaries from up to three relevant tables to Ollama.
    - For detected tables, computes full-dataset row counts, numeric sums/averages/medians/population standard deviations/ranges/missing counts, common category values, and representative rows locally to support file analysis.
@@ -24,7 +30,7 @@ Uploaded original files, extracted text, and metadata are stored in the local My
 
 There is no browser Content Security Policy restricting network connections. The agent sends the conversation, retrieved file excerpts, and calculated analysis to the endpoint configured in API & Model Setup. A system prompt directs it to ground recommendations in supplied data, keep initial answers concise, use South African rand for monetary figures, ask focused clarifying questions when material information is missing, distinguish estimates from source facts, and treat imported content as untrusted; this is guidance, not a guarantee of model behavior or a model-weight fine-tune. Pointing this setting at a remote endpoint sends that information to the service. The Ollama chat integration does not itself provide a web-search tool.
 
-The API and MySQL port bind to loopback and are intended for a single local user; there is no login or tenant isolation. The API retains file-type and file-size checks, metadata validation, and parameterized SQL queries for database integrity. Document parsing and keyword retrieval run locally, but this app does not use LlamaIndex.TS or generate vector embeddings. OCR is not supported.
+The API and MySQL port bind to loopback. User authentication uses `scrypt` password hashing and `HttpOnly` session cookies stored as SHA-256 hashes in `user_sessions`, enforcing role-based access control (`admin`, `writer`, `viewer`) across API routes. On first launch (when no users exist), the sign-in screen prompts to create the initial Administrator account. The API retains file-type and file-size checks, metadata validation, and parameterized SQL queries for database integrity. Document parsing and keyword retrieval run locally, but this app does not use LlamaIndex.TS or generate vector embeddings. OCR is not supported.
 
 The analytics dashboard checks every ready PDF, CSV, and TXT upload for structured, delimited table data. Retail charts combine compatible records across uploaded files and infer date, spend, item, quantity, and customer columns from detected headers; columns can be adjusted manually. Weekday visits count rows by default, or distinct customer/date pairs when a customer column is selected. Spend can be grouped by day, week, or month and includes a cumulative total. Popular items rank by quantity when available, otherwise by transaction rows. Narrative documents without a structured table remain available to the assistant but cannot provide transaction-chart values. For relevant forecast questions, the assistant also receives locally calculated product-price predictions and numeric-column trend projections, where the available rows support regression.
 
@@ -61,4 +67,4 @@ npm run dev
 
 Open [http://localhost:3000](http://localhost:3000) in your browser.
 
-The API creates the `documents` and `document_chunks` tables automatically on startup. To run the production server, first run `npm run build`, then `npm start`; the API serves the built application and database endpoints on port 3002.
+The API creates the `documents`, `document_chunks`, `users`, and `user_sessions` tables automatically on startup. To run the production server, first run `npm run build`, then `npm start`; the API serves the built application and database endpoints on port 3002.

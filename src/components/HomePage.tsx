@@ -26,6 +26,7 @@ import type { ProductPriceObservation } from '../utils/retailAnalytics';
 
 interface HomePageProps {
   documents: KnowledgeDocument[];
+  canWrite?: boolean;
   onOpenIngestion: () => void;
 }
 
@@ -315,7 +316,7 @@ const DatasetAnalysis: React.FC<{ dataset: TabularDataset }> = ({ dataset }) => 
   );
 };
 
-export const HomePage: React.FC<HomePageProps> = ({ documents, onOpenIngestion }) => {
+export const HomePage: React.FC<HomePageProps> = ({ documents, canWrite = true, onOpenIngestion }) => {
   const datasets = useMemo(() => getStructuredDatasets(documents), [documents]);
   const combinedRetailDataset = useMemo(() => combineRetailDatasets(datasets), [datasets]);
   const productPriceHistory = useMemo(() => getProductPriceHistory(datasets), [datasets]);
@@ -375,15 +376,19 @@ export const HomePage: React.FC<HomePageProps> = ({ documents, onOpenIngestion }
         <DatasetAnalysis key={selectedDataset.id} dataset={selectedDataset} />
       ) : (
         <section style={{ ...cardStyle, textAlign: 'center', padding: '32px' }}>
-          <h2 style={{ fontSize: '1.1rem', fontWeight: 'bold' }}>Upload a structured dataset to begin</h2>
+          <h2 style={{ fontSize: '1.1rem', fontWeight: 'bold' }}>
+            {canWrite ? 'Upload a structured dataset to begin' : 'No structured datasets available yet'}
+          </h2>
           <p style={{ color: '#64748b', fontSize: '0.875rem', margin: '8px 0 16px' }}>
-            Upload a CSV, TXT, or PDF that contains a delimited table. Narrative-only documents remain available to the assistant but cannot provide transaction chart data.
+            {canWrite
+              ? 'Upload a CSV, TXT, or PDF that contains a delimited table. Narrative-only documents remain available to the assistant but cannot provide transaction chart data.'
+              : 'Your View-only account can inspect datasets and charts once a Writer or Admin user uploads structured CSV, TXT, or PDF files.'}
           </p>
           <button
             onClick={onOpenIngestion}
             style={{ padding: '10px 16px', backgroundColor: '#0284c7', color: '#ffffff', border: 0, borderRadius: '6px', fontWeight: 600, cursor: 'pointer' }}
           >
-            Go to Data Ingestion
+            {canWrite ? 'Go to Data Ingestion' : 'View Ingested Files'}
           </button>
         </section>
       )}

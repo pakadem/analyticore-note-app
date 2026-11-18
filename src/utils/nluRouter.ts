@@ -661,16 +661,20 @@ export const classifyNaturalLanguageIntent = (
   // Navigation intent (strictly matches UI tab switching commands)
   let targetTab: NavTab | undefined;
   if (
-    /\b(take me to|go to|go back to|switch to|navigate to|bring up the)\b.*\b(dashboard|home|main|analytics|overview|upload|ingest|import|file import|api|setup|settings|model|connection|ollama)\b/i.test(
+    /\b(take me to|go to|go back to|switch to|navigate to|bring up the)\b.*\b(dashboard|home|main|analytics|overview|upload|ingest|import|file import|api|setup|settings|model|connection|ollama|profile|account|users|user management|administration)\b/i.test(
       lower
     ) ||
-    /\b(open|switch|view)\b.*\b(screen|tab|page|view|settings|dashboard|setup)\b/i.test(lower)
+    /\b(open|switch|view)\b.*\b(screen|tab|page|view|settings|dashboard|setup|profile|user management)\b/i.test(lower)
   ) {
-    targetTab = /\b(upload|ingest|import)\b/i.test(lower)
-      ? 'upload'
-      : /\b(api|setup|settings|model|connection|ollama)\b/i.test(lower)
-        ? 'api'
-        : 'home';
+    targetTab = /\b(users|user management|administration)\b/i.test(lower)
+      ? 'users'
+      : /\b(profile|my account)\b/i.test(lower)
+        ? 'profile'
+        : /\b(upload|ingest|import)\b/i.test(lower)
+          ? 'upload'
+          : /\b(api|setup|settings|model|connection|ollama)\b/i.test(lower)
+            ? 'api'
+            : 'home';
   }
 
   const matchedDoc = documents.find(
