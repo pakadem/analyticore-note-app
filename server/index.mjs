@@ -28,14 +28,14 @@ import { initializeDatabase, pool } from './db.mjs';
 const PORT = Number(process.env.API_PORT || 3002);
 const MAX_FILE_SIZE = 50 * 1024 * 1024;
 const MAX_TEXT_SIZE = 100 * 1024 * 1024;
-const SUPPORTED_EXTENSIONS = new Set(['pdf', 'csv', 'txt']);
+const SUPPORTED_EXTENSIONS = new Set(['pdf', 'csv', 'txt', 'png', 'jpg', 'jpeg']);
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: MAX_FILE_SIZE, files: 1, fields: 1, fieldSize: 1024 * 1024 },
   fileFilter: (_request, file, callback) => {
     const extension = file.originalname.split('.').pop()?.toLowerCase();
     if (!extension || !SUPPORTED_EXTENSIONS.has(extension)) {
-      callback(new Error('Unsupported file type. Upload a PDF, CSV, or TXT file.'));
+      callback(new Error('Unsupported file type. Upload a PDF, CSV, TXT, PNG, JPG, or JPEG file.'));
       return;
     }
     callback(null, true);
@@ -74,7 +74,7 @@ const validateDocumentMetadata = (metadata, file) => {
 
   const extension = safeName.split('.').pop()?.toLowerCase();
   if (!extension || !SUPPORTED_EXTENSIONS.has(extension)) {
-    throw new Error('Unsupported file type. Upload a PDF, CSV, or TXT file.');
+    throw new Error('Unsupported file type. Upload a PDF, CSV, TXT, PNG, JPG, or JPEG file.');
   }
   if (!Number.isSafeInteger(size) || size < 0 || size > MAX_FILE_SIZE) {
     throw new Error('File exceeds the 50 MB upload limit.');

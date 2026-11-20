@@ -21,6 +21,7 @@ import {
   executeAgentTool,
   serializeTableContent,
 } from '../utils/agentTools';
+import { buildExternalApiContext, loadApiEndpoints } from '../utils/externalApiContext';
 
 interface AgentChatboxProps {
   apiConfig: ApiConfig;
@@ -354,6 +355,8 @@ export const AgentChatbox: React.FC<AgentChatboxProps> = ({
     const executedTools: NonNullable<ChatMessage['toolCalls']> = [];
     const generatedArtifacts: GeneratedFileArtifact[] = [];
     const ollama = new Ollama({ host: apiConfig.hostUrl });
+    setAgentStatus('Loading linked API context...');
+    const externalApiContext = await buildExternalApiContext(loadApiEndpoints());
 
     const runToolAndRecord = async (
       name: string,
@@ -377,7 +380,11 @@ export const AgentChatbox: React.FC<AgentChatboxProps> = ({
     };
 
     const baseIntentPlan = classifyNaturalLanguageIntent(retrievalQuery, readyDocs);
-    const systemPromptWithGlobalContext = `${SYSTEM_PROMPT}\n\n${globalKnowledgeContext}`;
+    const systemPromptWithGlobalContext = [
+      SYSTEM_PROMPT,
+      globalKnowledgeContext,
+      externalApiContext,
+    ].filter(Boolean).join('\n\n');
     const sessionHistory: Message[] = messages
       .filter((m) => m.id !== '1' && (m.role === 'user' || m.role === 'assistant'))
       .slice(-8)

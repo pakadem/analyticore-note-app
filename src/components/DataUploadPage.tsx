@@ -2,6 +2,7 @@ import React from 'react';
 import { KnowledgeDocument } from '../types/app';
 import {
   extractDocumentText,
+  isImageDocument,
   isSupportedDocument,
   MAX_DOCUMENT_SIZE,
   PDF_TEXT_EXTRACTION_VERSION,
@@ -42,13 +43,17 @@ export const DataUploadPage: React.FC<DataUploadPageProps> = ({
     content: string;
     loading: boolean;
     error?: string;
+    imageUrl?: string;
   } | null>(null);
   const previewRequestId = React.useRef(0);
 
   const closePreview = React.useCallback(() => {
     previewRequestId.current += 1;
+    setPreviewState((current) => {
+      if (current?.imageUrl) URL.revokeObjectURL(current.imageUrl);
+      return null;
+    });
     setViewingDocument(null);
-    setPreviewState(null);
   }, []);
 
   React.useEffect(() => {
@@ -64,6 +69,36 @@ export const DataUploadPage: React.FC<DataUploadPageProps> = ({
 
   const handleView = async (document: KnowledgeDocument) => {
     setViewingDocument(document);
+
+    if (isImageDocument(document)) {
+      setPreviewState({ documentId: document.id, content: document.content, loading: true });
+      try {
+        let fileBlob = document.file;
+        if (!fileBlob && document.hasFile) {
+          const response = await fetch(`/api/documents/${encodeURIComponent(document.id)}/file`, {
+            credentials: 'same-origin',
+          });
+          if (!response.ok) throw new Error(`Unable to open the image (HTTP ${response.status}).`);
+          fileBlob = await response.blob();
+        }
+        if (!fileBlob) throw new Error('No original image file is available.');
+        const imageUrl = URL.createObjectURL(fileBlob);
+        setPreviewState({
+          documentId: document.id,
+          content: document.content,
+          loading: false,
+          imageUrl,
+        });
+      } catch (error) {
+        setPreviewState({
+          documentId: document.id,
+          content: document.content,
+          loading: false,
+          error: error instanceof Error ? error.message : 'Unable to open this image.',
+        });
+      }
+      return;
+    }
 
     if (document.content) {
       setPreviewState({ documentId: document.id, content: document.content, loading: false });
@@ -204,7 +239,7 @@ export const DataUploadPage: React.FC<DataUploadPageProps> = ({
         let validForStorage = false;
         try {
           if (!isSupportedDocument(file)) {
-            throw new Error('Unsupported file type. Upload a PDF, CSV, or TXT file.');
+            throw new Error('Unsupported file type. Upload a PDF, CSV, TXT, PNG, JPG, or JPEG file.');
           }
           if (file.size > MAX_DOCUMENT_SIZE) {
             throw new Error('File exceeds the 50 MB upload limit.');
@@ -257,7 +292,7 @@ export const DataUploadPage: React.FC<DataUploadPageProps> = ({
       <div>
         <h1 style={{ fontSize: '1.75rem', fontWeight: 'bold' }}>Document & Dataset Ingestion</h1>
         <p style={{ color: '#64748b', fontSize: '0.875rem', marginTop: '4px' }}>
-          Upload PDF, CSV, and TXT files up to 50 MB. Original files, extracted text, and metadata are saved in the local MySQL database.
+          Upload PDF, CSV, TXT, PNG, JPG, and JPEG files up to 50 MB. Original files, extracted text or image metadata, and metadata are saved in the local MySQL database.
         </p>
       </div>
 
@@ -275,7 +310,7 @@ export const DataUploadPage: React.FC<DataUploadPageProps> = ({
           <div style={{ fontSize: '2.5rem', marginBottom: '12px' }}>📂</div>
           <h3 style={{ fontSize: '1.125rem', fontWeight: 'bold' }}>Upload Files for AI Retrieval</h3>
           <p style={{ color: '#64748b', fontSize: '0.875rem', marginTop: '4px' }}>
-            Supports selectable-text PDF, CSV, and TXT files up to 50 MB
+            Supports selectable-text PDF, CSV, TXT, PNG, JPG, and JPEG files up to 50 MB
           </p>
           <label
             style={{
@@ -293,7 +328,7 @@ export const DataUploadPage: React.FC<DataUploadPageProps> = ({
             Select Files
             <input
               type="file"
-              accept=".pdf,.csv,.txt"
+              accept=".pdf,.csv,.txt,.png,.jpg,.jpeg,image/png,image/jpeg"
               multiple
               onChange={handleFileUpload}
               style={{ display: 'none' }}
@@ -516,6 +551,37 @@ export const DataUploadPage: React.FC<DataUploadPageProps> = ({
                 <p role="status" style={{ margin: 0, color: '#64748b' }}>Loading document contents…</p>
               ) : previewState?.documentId === viewingDocument.id && previewState.error ? (
                 <p role="alert" style={{ margin: 0, color: '#b91c1c' }}>{previewState.error}</p>
+              ) : previewState?.documentId === viewingDocument.id && previewState.imageUrl ? (
+                <div>
+                  <img
+                    src={previewState.imageUrl}
+                    alt={viewingDocument.name}
+                    style={{
+                      display: 'block',
+                      maxWidth: '100%',
+                      maxHeight: '60vh',
+                      margin: '0 auto',
+                      objectFit: 'contain',
+                      borderRadius: '8px',
+                    }}
+                  />
+                  {previewState.content && (
+                    <pre
+                      style={{
+                        margin: '16px 0 0',
+                        padding: '12px',
+                        borderRadius: '8px',
+                        backgroundColor: '#f8fafc',
+                        fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+                        fontSize: '0.8rem',
+                        whiteSpace: 'pre-wrap',
+                        overflowWrap: 'anywhere',
+                      }}
+                    >
+                      {previewState.content}
+                    </pre>
+                  )}
+                </div>
               ) : previewState?.documentId === viewingDocument.id && previewState.content ? (
                 <pre
                   style={{

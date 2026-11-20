@@ -28,7 +28,12 @@ export { MAKRO_ITEM_HEADER, restructureMakroInvoiceText };
 export const MAX_DOCUMENT_SIZE = 50 * 1024 * 1024;
 export const MAX_RETRIEVED_CHUNKS = 30;
 export const PDF_TEXT_EXTRACTION_VERSION = 3;
-const SUPPORTED_EXTENSIONS = new Set(['pdf', 'csv', 'txt']);
+const SUPPORTED_EXTENSIONS = new Set(['pdf', 'csv', 'txt', 'png', 'jpg', 'jpeg']);
+const SUPPORTED_IMAGE_EXTENSIONS = new Set(['png', 'jpg', 'jpeg']);
+
+export const isImageDocument = (file: Pick<File, 'name' | 'type'>): boolean =>
+  SUPPORTED_IMAGE_EXTENSIONS.has(file.name.split('.').pop()?.toLowerCase() ?? '') ||
+  /^image\/(?:png|jpeg)$/.test(file.type.toLowerCase());
 
 export const isSupportedDocument = (file: File): boolean => {
   const extension = file.name.split('.').pop()?.toLowerCase();
@@ -141,6 +146,24 @@ const formatPdfPageLines = (lines: PdfTextLine[]): string => {
 
 export const extractDocumentText = async (file: File): Promise<string> => {
   const extension = file.name.split('.').pop()?.toLowerCase();
+
+  if (extension && SUPPORTED_IMAGE_EXTENSIONS.has(extension)) {
+    let dimensions = '';
+    try {
+      const bitmap = await createImageBitmap(file);
+      dimensions = `Dimensions: ${bitmap.width} x ${bitmap.height} pixels`;
+      bitmap.close();
+    } catch {
+      dimensions = 'Dimensions: unavailable';
+    }
+    return [
+      `[Image document]`,
+      `Filename: ${file.name}`,
+      `Format: ${file.type || extension}`,
+      dimensions,
+      `Image ingestion stores the original image for viewing and downloads.`,
+    ].join('\n');
+  }
 
   if (extension === 'pdf') {
     const [{ getDocument, GlobalWorkerOptions }, { default: pdfWorkerUrl }] = await Promise.all([
