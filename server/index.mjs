@@ -776,6 +776,92 @@ app.delete(
   }
 );
 
+app.post('/api/external-api', requireAuth, async (request, response, next) => {
+  try {
+    const { url, headers } = request.body ?? {};
+    if (typeof url !== 'string') {
+      response.status(400).json({ error: 'API URL is required.' });
+      return;
+    }
+
+    let parsedUrl;
+    try {
+      parsedUrl = new URL(url);
+    } catch {
+      response.status(400).json({ error: 'Enter a valid HTTP or HTTPS API URL.' });
+      return;
+    }
+    if (!['http:', 'https:'].includes(parsedUrl.protocol)) {
+      response.status(400).json({ error: 'Only HTTP and HTTPS API URLs are allowed.' });
+      return;
+    }
+
+    const hostname = parsedUrl.hostname.toLowerCase();
+    const privateAddress =
+      hostname === 'localhost'
+      || hostname.endsWith('.localhost')
+      || hostname === '::1'
+      || /^127(?:\.\d{1,3}){3}$/.test(hostname)
+      || /^10(?:\.\d{1,3}){3}$/.test(hostname)
+      || /^192\.168(?:\.\d{1,3}){2}$/.test(hostname)
+      || /^172\.(?:1[6-9]|2\d|3[01])(?:\.\d{1,3}){2}$/.test(hostname)
+      || /^169\.254(?:\.\d{1,3}){2}$/.test(hostname);
+    if (privateAddress) {
+      response.status(400).json({ error: 'Private and local network addresses are not allowed.' });
+      return;
+    }
+
+    if (typeof headers !== 'object' || headers === null || Array.isArray(headers)) {
+      response.status(400).json({ error: 'Request headers must be an object.' });
+      return;
+    }
+
+    const forbiddenHeaders = new Set([
+      'host',
+      'content-length',
+      'transfer-encoding',
+      'connection',
+      'cookie',
+      'proxy-authorization',
+    ]);
+    const requestHeaders = {};
+    for (const [key, value] of Object.entries(headers)) {
+      if (
+        typeof key === 'string'
+        && key.trim()
+        && typeof value === 'string'
+        && !forbiddenHeaders.has(key.trim().toLowerCase())
+      ) {
+        requestHeaders[key.trim()] = value;
+      }
+    }
+
+    const upstream = await fetch(parsedUrl, {
+      method: 'GET',
+      headers: requestHeaders,
+      signal: AbortSignal.timeout(30_000),
+    });
+    const contentType = upstream.headers.get('content-type') || '';
+    const bodyText = await upstream.text();
+
+    if (contentType.includes('json')) {
+      try {
+        response.status(upstream.status).json(JSON.parse(bodyText));
+        return;
+      } catch {
+        // Fall through and return the text with an appropriate error status.
+      }
+    }
+    response.status(upstream.status).type(contentType || 'text/plain').send(bodyText);
+  } catch (error) {
+    if (error?.name === 'TimeoutError') {
+      response.status(504).json({ error: 'The external API timed out.' });
+      return;
+    }
+    next(error);
+  }
+});
+
 app.all('/api/{*path}', (_request, response) => {
   response.status(404).json({ error: 'API endpoint not found.' });
 });

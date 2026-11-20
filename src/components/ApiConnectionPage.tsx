@@ -11,6 +11,13 @@ interface ApiEndpoint {
   id: string;
   name: string;
   url: string;
+  headers: ApiRequestHeader[];
+}
+
+interface ApiRequestHeader {
+  id: string;
+  key: string;
+  value: string;
 }
 
 interface ApiPreview {
@@ -27,9 +34,9 @@ interface ApiPreview {
 const ENDPOINT_STORAGE_KEY = 'analyticore-api-endpoints';
 
 const DEFAULT_ENDPOINTS: ApiEndpoint[] = [
-  { id: 'dummy-products', name: 'Products', url: 'https://dummyjson.com/Products' },
-  { id: 'dummy-carts', name: 'Carts', url: 'https://dummyjson.com/Carts' },
-  { id: 'dummy-users', name: 'Users', url: 'https://dummyjson.com/Users' },
+  { id: 'dummy-products', name: 'Products', url: 'https://dummyjson.com/Products', headers: [] },
+  { id: 'dummy-carts', name: 'Carts', url: 'https://dummyjson.com/Carts', headers: [] },
+  { id: 'dummy-users', name: 'Users', url: 'https://dummyjson.com/Users', headers: [] },
 ];
 
 const loadEndpoints = (): ApiEndpoint[] => {
@@ -45,8 +52,23 @@ const loadEndpoints = (): ApiEndpoint[] => {
         && typeof item.id === 'string'
         && typeof item.name === 'string'
         && typeof item.url === 'string'
+        && (item.headers === undefined || Array.isArray(item.headers))
     );
-    return valid.length > 0 ? valid : DEFAULT_ENDPOINTS;
+    return valid.length > 0
+      ? valid.map((endpoint) => ({
+          ...endpoint,
+          headers: Array.isArray(endpoint.headers)
+            ? endpoint.headers.filter(
+                (header): header is ApiRequestHeader =>
+                  typeof header === 'object'
+                  && header !== null
+                  && typeof header.id === 'string'
+                  && typeof header.key === 'string'
+                  && typeof header.value === 'string'
+              )
+            : [],
+        }))
+      : DEFAULT_ENDPOINTS;
   } catch {
     return DEFAULT_ENDPOINTS;
   }
@@ -101,8 +123,61 @@ export const ApiConnectionPage: React.FC<ApiPageProps> = ({ config, canEdit, onU
         id: crypto.randomUUID(),
         name: `API ${current.length + 1}`,
         url: 'https://',
+        headers: [],
       },
     ]);
+  };
+
+  const addHeader = (endpointId: string) => {
+    if (!canEdit) return;
+    setEndpoints((current) =>
+      current.map((endpoint) =>
+        endpoint.id === endpointId
+          ? {
+              ...endpoint,
+              headers: [
+                ...endpoint.headers,
+                { id: crypto.randomUUID(), key: 'Authorization', value: '' },
+              ],
+            }
+          : endpoint
+      )
+    );
+  };
+
+  const updateHeader = (
+    endpointId: string,
+    headerId: string,
+    field: 'key' | 'value',
+    value: string
+  ) => {
+    if (!canEdit) return;
+    setEndpoints((current) =>
+      current.map((endpoint) =>
+        endpoint.id === endpointId
+          ? {
+              ...endpoint,
+              headers: endpoint.headers.map((header) =>
+                header.id === headerId ? { ...header, [field]: value } : header
+              ),
+            }
+          : endpoint
+      )
+    );
+  };
+
+  const removeHeader = (endpointId: string, headerId: string) => {
+    if (!canEdit) return;
+    setEndpoints((current) =>
+      current.map((endpoint) =>
+        endpoint.id === endpointId
+          ? {
+              ...endpoint,
+              headers: endpoint.headers.filter((header) => header.id !== headerId),
+            }
+          : endpoint
+      )
+    );
   };
 
   const removeEndpoint = (id: string) => {
@@ -129,7 +204,16 @@ export const ApiConnectionPage: React.FC<ApiPageProps> = ({ config, canEdit, onU
       if (!/^https?:\/\//i.test(endpoint.url.trim())) {
         throw new Error('Enter a valid HTTP or HTTPS API URL.');
       }
-      const response = await fetch(endpoint.url.trim(), { credentials: 'omit' });
+      const headers = endpoint.headers.reduce<Record<string, string>>((result, header) => {
+        if (header.key.trim()) result[header.key.trim()] = header.value;
+        return result;
+      }, {});
+      const response = await fetch('/api/external-api', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: endpoint.url.trim(), headers }),
+      });
       if (!response.ok) throw new Error(`Request failed with HTTP ${response.status}.`);
 
       const payload: unknown = await response.json();
@@ -313,23 +397,71 @@ export const ApiConnectionPage: React.FC<ApiPageProps> = ({ config, canEdit, onU
 
         <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
           {endpoints.map((endpoint) => (
-            <div key={endpoint.id} style={{ display: 'grid', gridTemplateColumns: 'minmax(120px, 180px) minmax(220px, 1fr) auto auto', gap: '10px', alignItems: 'end', padding: '12px', border: '1px solid #e2e8f0', borderRadius: '9px', backgroundColor: '#f8fafc' }}>
-              <div>
-                <label style={{ display: 'block', fontSize: '0.75rem', fontWeight: '600', marginBottom: '5px' }}>API Name</label>
-                <input type="text" disabled={!canEdit} value={endpoint.name} onChange={(e) => updateEndpoint(endpoint.id, 'name', e.target.value)} style={{ width: '100%', boxSizing: 'border-box', padding: '9px', borderRadius: '6px', border: '1px solid #cbd5e1', backgroundColor: canEdit ? '#ffffff' : '#f1f5f9' }} />
-              </div>
-              <div>
-                <label style={{ display: 'block', fontSize: '0.75rem', fontWeight: '600', marginBottom: '5px' }}>Endpoint URL</label>
-                <input type="url" disabled={!canEdit} value={endpoint.url} onChange={(e) => updateEndpoint(endpoint.id, 'url', e.target.value)} style={{ width: '100%', boxSizing: 'border-box', padding: '9px', borderRadius: '6px', border: '1px solid #cbd5e1', backgroundColor: canEdit ? '#ffffff' : '#f1f5f9' }} />
-              </div>
-              <button type="button" onClick={() => void openEndpoint(endpoint)} style={{ height: '38px', border: '1px solid #2563eb', borderRadius: '6px', backgroundColor: '#ffffff', color: '#1d4ed8', padding: '0 12px', fontWeight: '600', cursor: 'pointer' }}>
-                View data
-              </button>
-              {canEdit && (
-                <button type="button" onClick={() => removeEndpoint(endpoint.id)} aria-label={`Remove ${endpoint.name}`} style={{ height: '38px', border: '1px solid #fca5a5', borderRadius: '6px', backgroundColor: '#fff1f2', color: '#991b1b', padding: '0 10px', cursor: 'pointer' }}>
-                  Remove
+            <div key={endpoint.id} style={{ padding: '12px', border: '1px solid #e2e8f0', borderRadius: '9px', backgroundColor: '#f8fafc' }}>
+              <div style={{ display: 'grid', gridTemplateColumns: 'minmax(120px, 180px) minmax(220px, 1fr) auto auto', gap: '10px', alignItems: 'end' }}>
+                <div>
+                  <label style={{ display: 'block', fontSize: '0.75rem', fontWeight: '600', marginBottom: '5px' }}>API Name</label>
+                  <input type="text" disabled={!canEdit} value={endpoint.name} onChange={(e) => updateEndpoint(endpoint.id, 'name', e.target.value)} style={{ width: '100%', boxSizing: 'border-box', padding: '9px', borderRadius: '6px', border: '1px solid #cbd5e1', backgroundColor: canEdit ? '#ffffff' : '#f1f5f9' }} />
+                </div>
+                <div>
+                  <label style={{ display: 'block', fontSize: '0.75rem', fontWeight: '600', marginBottom: '5px' }}>Endpoint URL</label>
+                  <input type="url" disabled={!canEdit} value={endpoint.url} onChange={(e) => updateEndpoint(endpoint.id, 'url', e.target.value)} style={{ width: '100%', boxSizing: 'border-box', padding: '9px', borderRadius: '6px', border: '1px solid #cbd5e1', backgroundColor: canEdit ? '#ffffff' : '#f1f5f9' }} />
+                </div>
+                <button type="button" onClick={() => void openEndpoint(endpoint)} style={{ height: '38px', border: '1px solid #2563eb', borderRadius: '6px', backgroundColor: '#ffffff', color: '#1d4ed8', padding: '0 12px', fontWeight: '600', cursor: 'pointer' }}>
+                  View data
                 </button>
-              )}
+                {canEdit && (
+                  <button type="button" onClick={() => removeEndpoint(endpoint.id)} aria-label={`Remove ${endpoint.name}`} style={{ height: '38px', border: '1px solid #fca5a5', borderRadius: '6px', backgroundColor: '#fff1f2', color: '#991b1b', padding: '0 10px', cursor: 'pointer' }}>
+                    Remove
+                  </button>
+                )}
+              </div>
+
+              <div style={{ marginTop: '12px', paddingTop: '12px', borderTop: '1px solid #e2e8f0' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+                  <div>
+                    <span style={{ fontSize: '0.75rem', fontWeight: '600' }}>Request Headers</span>
+                    <span style={{ marginLeft: '8px', color: '#64748b', fontSize: '0.7rem' }}>For example: Authorization / Bearer token</span>
+                  </div>
+                  {canEdit && (
+                    <button type="button" onClick={() => addHeader(endpoint.id)} style={{ border: '1px solid #cbd5e1', borderRadius: '6px', backgroundColor: '#ffffff', color: '#334155', padding: '6px 9px', cursor: 'pointer', fontSize: '0.75rem' }}>
+                      + Add Header
+                    </button>
+                  )}
+                </div>
+
+                {endpoint.headers.length === 0 ? (
+                  <p style={{ margin: 0, color: '#94a3b8', fontSize: '0.75rem' }}>No custom headers configured.</p>
+                ) : (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                    {endpoint.headers.map((header) => (
+                      <div key={header.id} style={{ display: 'grid', gridTemplateColumns: 'minmax(150px, 220px) minmax(220px, 1fr) auto', gap: '8px', alignItems: 'center' }}>
+                        <input
+                          type="text"
+                          disabled={!canEdit}
+                          value={header.key}
+                          onChange={(event) => updateHeader(endpoint.id, header.id, 'key', event.target.value)}
+                          placeholder="Header name"
+                          style={{ width: '100%', boxSizing: 'border-box', padding: '8px', borderRadius: '6px', border: '1px solid #cbd5e1', backgroundColor: canEdit ? '#ffffff' : '#f1f5f9' }}
+                        />
+                        <input
+                          type={header.key.toLowerCase() === 'authorization' ? 'password' : 'text'}
+                          disabled={!canEdit}
+                          value={header.value}
+                          onChange={(event) => updateHeader(endpoint.id, header.id, 'value', event.target.value)}
+                          placeholder={header.key.toLowerCase() === 'authorization' ? 'Bearer token' : 'Header value'}
+                          style={{ width: '100%', boxSizing: 'border-box', padding: '8px', borderRadius: '6px', border: '1px solid #cbd5e1', backgroundColor: canEdit ? '#ffffff' : '#f1f5f9' }}
+                        />
+                        {canEdit && (
+                          <button type="button" onClick={() => removeHeader(endpoint.id, header.id)} aria-label={`Remove ${header.key || 'header'}`} style={{ border: 'none', backgroundColor: 'transparent', color: '#991b1b', cursor: 'pointer', padding: '8px' }}>
+                            Remove
+                          </button>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
             </div>
           ))}
         </div>
