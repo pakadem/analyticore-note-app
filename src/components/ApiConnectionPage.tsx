@@ -7,13 +7,197 @@ interface ApiPageProps {
   onUpdateConfig: (config: ApiConfig) => void;
 }
 
+interface ApiEndpoint {
+  id: string;
+  name: string;
+  url: string;
+}
+
+interface ApiPreview {
+  endpointId: string;
+  name: string;
+  url: string;
+  rows: Record<string, unknown>[];
+  total: number;
+  loaded: boolean;
+  loading: boolean;
+  error: string | null;
+}
+
+const ENDPOINT_STORAGE_KEY = 'analyticore-api-endpoints';
+
+const DEFAULT_ENDPOINTS: ApiEndpoint[] = [
+  { id: 'dummy-products', name: 'Products', url: 'https://dummyjson.com/Products' },
+  { id: 'dummy-carts', name: 'Carts', url: 'https://dummyjson.com/Carts' },
+  { id: 'dummy-users', name: 'Users', url: 'https://dummyjson.com/Users' },
+];
+
+const loadEndpoints = (): ApiEndpoint[] => {
+  try {
+    const saved = window.localStorage.getItem(ENDPOINT_STORAGE_KEY);
+    if (!saved) return DEFAULT_ENDPOINTS;
+    const parsed: unknown = JSON.parse(saved);
+    if (!Array.isArray(parsed)) return DEFAULT_ENDPOINTS;
+    const valid = parsed.filter(
+      (item): item is ApiEndpoint =>
+        typeof item === 'object'
+        && item !== null
+        && typeof item.id === 'string'
+        && typeof item.name === 'string'
+        && typeof item.url === 'string'
+    );
+    return valid.length > 0 ? valid : DEFAULT_ENDPOINTS;
+  } catch {
+    return DEFAULT_ENDPOINTS;
+  }
+};
+
+const displayValue = (value: unknown): string => {
+  if (value === null || value === undefined) return '-';
+  if (typeof value === 'object') {
+    if (Array.isArray(value)) return `${value.length} items`;
+    return JSON.stringify(value);
+  }
+  return String(value);
+};
+
 export const ApiConnectionPage: React.FC<ApiPageProps> = ({ config, canEdit, onUpdateConfig }) => {
+  const [endpoints, setEndpoints] = React.useState<ApiEndpoint[]>(loadEndpoints);
+  const [preview, setPreview] = React.useState<ApiPreview | null>(null);
+  const [search, setSearch] = React.useState('');
+  const [page, setPage] = React.useState(1);
+
+  React.useEffect(() => {
+    window.localStorage.setItem(ENDPOINT_STORAGE_KEY, JSON.stringify(endpoints));
+  }, [endpoints]);
+
+  const closePreview = React.useCallback(() => {
+    setPreview(null);
+    setSearch('');
+    setPage(1);
+  }, []);
+
+  React.useEffect(() => {
+    if (!preview) return;
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') closePreview();
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [preview, closePreview]);
+
+  const updateEndpoint = (id: string, field: 'name' | 'url', value: string) => {
+    if (!canEdit) return;
+    setEndpoints((current) =>
+      current.map((endpoint) => endpoint.id === id ? { ...endpoint, [field]: value } : endpoint)
+    );
+  };
+
+  const addEndpoint = () => {
+    if (!canEdit) return;
+    setEndpoints((current) => [
+      ...current,
+      {
+        id: crypto.randomUUID(),
+        name: `API ${current.length + 1}`,
+        url: 'https://',
+      },
+    ]);
+  };
+
+  const removeEndpoint = (id: string) => {
+    if (!canEdit) return;
+    setEndpoints((current) => current.filter((endpoint) => endpoint.id !== id));
+    if (preview?.endpointId === id) closePreview();
+  };
+
+  const openEndpoint = async (endpoint: ApiEndpoint) => {
+    setSearch('');
+    setPage(1);
+    setPreview({
+      endpointId: endpoint.id,
+      name: endpoint.name,
+      url: endpoint.url,
+      rows: [],
+      total: 0,
+      loaded: false,
+      loading: true,
+      error: null,
+    });
+
+    try {
+      if (!/^https?:\/\//i.test(endpoint.url.trim())) {
+        throw new Error('Enter a valid HTTP or HTTPS API URL.');
+      }
+      const response = await fetch(endpoint.url.trim(), { credentials: 'omit' });
+      if (!response.ok) throw new Error(`Request failed with HTTP ${response.status}.`);
+
+      const payload: unknown = await response.json();
+      if (typeof payload !== 'object' || payload === null) {
+        throw new Error('The API returned an unexpected response.');
+      }
+
+      const data = payload as Record<string, unknown>;
+      const arrayValue = Object.values(data).find(Array.isArray);
+      if (!Array.isArray(arrayValue)) {
+        throw new Error('The API response does not contain a list of records.');
+      }
+
+      const rows = arrayValue.filter(
+        (row): row is Record<string, unknown> =>
+          typeof row === 'object' && row !== null && !Array.isArray(row)
+      );
+      const total = typeof data.total === 'number' ? data.total : rows.length;
+      setPreview({
+        endpointId: endpoint.id,
+        name: endpoint.name,
+        url: endpoint.url,
+        rows,
+        total,
+        loaded: true,
+        loading: false,
+        error: null,
+      });
+    } catch (error) {
+      setPreview({
+        endpointId: endpoint.id,
+        name: endpoint.name,
+        url: endpoint.url,
+        rows: [],
+        total: 0,
+        loaded: true,
+        loading: false,
+        error: error instanceof Error ? error.message : 'Unable to load API data.',
+      });
+    }
+  };
+
+  const filteredRows = preview
+    ? preview.rows.filter((row) =>
+        Object.values(row).some((value) =>
+          displayValue(value).toLowerCase().includes(search.toLowerCase())
+        )
+      )
+    : [];
+  const pageSize = 10;
+  const pageCount = Math.max(1, Math.ceil(filteredRows.length / pageSize));
+  const safePage = Math.min(page, pageCount);
+  const visibleRows = filteredRows.slice((safePage - 1) * pageSize, safePage * pageSize);
+  const columns = preview
+    ? Array.from(
+        visibleRows.reduce((set, row) => {
+          Object.keys(row).slice(0, 8).forEach((key) => set.add(key));
+          return set;
+        }, new Set<string>())
+      )
+    : [];
+
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: '24px', maxWidth: '680px' }}>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '24px', maxWidth: '980px' }}>
       <div>
         <h1 style={{ fontSize: '1.75rem', fontWeight: 'bold' }}>LLM & API Setup</h1>
         <p style={{ color: '#64748b', fontSize: '0.875rem', marginTop: '4px' }}>
-          Configure the Ollama endpoint and model parameters.
+          Configure the Ollama endpoint, model parameters, and external API connections.
         </p>
       </div>
 
@@ -29,7 +213,7 @@ export const ApiConnectionPage: React.FC<ApiPageProps> = ({ config, canEdit, onU
             fontSize: '0.85rem',
           }}
         >
-          <strong>🔒 View-Only Mode:</strong> You can inspect the active Ollama endpoint and model parameters, but modifying these settings requires a <strong>Writer</strong> or <strong>Admin</strong> role.
+          <strong>View-only mode:</strong> Modifying settings requires a <strong>Writer</strong> or <strong>Admin</strong> role.
         </div>
       )}
 
@@ -42,7 +226,6 @@ export const ApiConnectionPage: React.FC<ApiPageProps> = ({ config, canEdit, onU
           boxShadow: '0 1px 3px rgba(0,0,0,0.05)',
         }}
       >
-        {/* Status Indicator */}
         <div
           style={{
             display: 'flex',
@@ -63,56 +246,29 @@ export const ApiConnectionPage: React.FC<ApiPageProps> = ({ config, canEdit, onU
               backgroundColor: config.isConnected ? '#22c55e' : '#ef4444',
             }}
           />
-          <span
-            style={{
-              fontSize: '0.875rem',
-              fontWeight: '600',
-              color: config.isConnected ? '#166534' : '#991b1b',
-            }}
-          >
+          <span style={{ fontSize: '0.875rem', fontWeight: '600', color: config.isConnected ? '#166534' : '#991b1b' }}>
             {config.isConnected ? 'Ollama endpoint configured' : 'Ollama service unreachable'}
           </span>
         </div>
 
         <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
           <div>
-            <label style={{ display: 'block', fontSize: '0.875rem', fontWeight: '600', marginBottom: '6px' }}>
-              Ollama Endpoint
-            </label>
+            <label style={{ display: 'block', fontSize: '0.875rem', fontWeight: '600', marginBottom: '6px' }}>Ollama Endpoint</label>
             <input
               type="text"
               disabled={!canEdit}
               value={config.hostUrl}
               onChange={(e) => canEdit && onUpdateConfig({ ...config, hostUrl: e.target.value })}
-              style={{
-                width: '100%',
-                padding: '10px',
-                borderRadius: '6px',
-                border: '1px solid #cbd5e1',
-                fontSize: '0.875rem',
-                backgroundColor: canEdit ? '#ffffff' : '#f1f5f9',
-                color: canEdit ? '#0f172a' : '#64748b',
-              }}
+              style={{ width: '100%', boxSizing: 'border-box', padding: '10px', borderRadius: '6px', border: '1px solid #cbd5e1', fontSize: '0.875rem', backgroundColor: canEdit ? '#ffffff' : '#f1f5f9', color: canEdit ? '#0f172a' : '#64748b' }}
             />
           </div>
-
           <div>
-            <label style={{ display: 'block', fontSize: '0.875rem', fontWeight: '600', marginBottom: '6px' }}>
-              Active LLM Model
-            </label>
+            <label style={{ display: 'block', fontSize: '0.875rem', fontWeight: '600', marginBottom: '6px' }}>Active LLM Model</label>
             <select
               disabled={!canEdit}
               value={config.modelName}
               onChange={(e) => canEdit && onUpdateConfig({ ...config, modelName: e.target.value })}
-              style={{
-                width: '100%',
-                padding: '10px',
-                borderRadius: '6px',
-                border: '1px solid #cbd5e1',
-                fontSize: '0.875rem',
-                backgroundColor: canEdit ? '#ffffff' : '#f1f5f9',
-                color: canEdit ? '#0f172a' : '#64748b',
-              }}
+              style={{ width: '100%', padding: '10px', borderRadius: '6px', border: '1px solid #cbd5e1', fontSize: '0.875rem', backgroundColor: canEdit ? '#ffffff' : '#f1f5f9', color: canEdit ? '#0f172a' : '#64748b' }}
             >
               <option value="llama3:8b">Meta Llama 3 (8B Instruct)</option>
               <option value="llama3.1:8b">Meta Llama 3.1 (8B)</option>
@@ -120,47 +276,148 @@ export const ApiConnectionPage: React.FC<ApiPageProps> = ({ config, canEdit, onU
               <option value="mistral-nemo">Mistral Nemo</option>
             </select>
           </div>
-
           <div>
             <label style={{ display: 'block', fontSize: '0.875rem', fontWeight: '600', marginBottom: '6px' }}>
               Temperature (Creativity): {config.temperature}
             </label>
-            <input
-              type="range"
-              min="0"
-              max="1"
-              step="0.05"
-              disabled={!canEdit}
-              value={config.temperature}
-              onChange={(e) => canEdit && onUpdateConfig({ ...config, temperature: parseFloat(e.target.value) })}
-              style={{ width: '100%' }}
-            />
+            <input type="range" min="0" max="1" step="0.05" disabled={!canEdit} value={config.temperature} onChange={(e) => canEdit && onUpdateConfig({ ...config, temperature: parseFloat(e.target.value) })} style={{ width: '100%' }} />
           </div>
-
           <div>
-            <label style={{ display: 'block', fontSize: '0.875rem', fontWeight: '600', marginBottom: '6px' }}>
-              Context Window Tokens
-            </label>
+            <label style={{ display: 'block', fontSize: '0.875rem', fontWeight: '600', marginBottom: '6px' }}>Context Window Tokens</label>
             <input
               type="number"
               disabled={!canEdit}
               value={config.contextWindow}
-              onChange={(e) =>
-                canEdit && onUpdateConfig({ ...config, contextWindow: parseInt(e.target.value) || 4096 })
-              }
-              style={{
-                width: '100%',
-                padding: '10px',
-                borderRadius: '6px',
-                border: '1px solid #cbd5e1',
-                fontSize: '0.875rem',
-                backgroundColor: canEdit ? '#ffffff' : '#f1f5f9',
-                color: canEdit ? '#0f172a' : '#64748b',
-              }}
+              onChange={(e) => canEdit && onUpdateConfig({ ...config, contextWindow: parseInt(e.target.value) || 4096 })}
+              style={{ width: '100%', padding: '10px', borderRadius: '6px', border: '1px solid #cbd5e1', fontSize: '0.875rem', backgroundColor: canEdit ? '#ffffff' : '#f1f5f9', color: canEdit ? '#0f172a' : '#64748b' }}
             />
           </div>
         </div>
       </div>
+
+      <section
+        aria-labelledby="external-api-heading"
+        style={{ backgroundColor: '#ffffff', padding: '24px', borderRadius: '12px', border: '1px solid #e2e8f0', boxShadow: '0 1px 3px rgba(0,0,0,0.05)' }}
+      >
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '16px', marginBottom: '16px' }}>
+          <div>
+            <h2 id="external-api-heading" style={{ margin: 0, fontSize: '1.1rem' }}>External API Connections</h2>
+            <p style={{ margin: '4px 0 0', color: '#64748b', fontSize: '0.875rem' }}>Edit endpoints or add a new API connection.</p>
+          </div>
+          {canEdit && (
+            <button type="button" onClick={addEndpoint} style={{ border: 'none', borderRadius: '7px', backgroundColor: '#2563eb', color: '#ffffff', padding: '9px 13px', fontWeight: '600', cursor: 'pointer', whiteSpace: 'nowrap' }}>
+              + Add API
+            </button>
+          )}
+        </div>
+
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+          {endpoints.map((endpoint) => (
+            <div key={endpoint.id} style={{ display: 'grid', gridTemplateColumns: 'minmax(120px, 180px) minmax(220px, 1fr) auto auto', gap: '10px', alignItems: 'end', padding: '12px', border: '1px solid #e2e8f0', borderRadius: '9px', backgroundColor: '#f8fafc' }}>
+              <div>
+                <label style={{ display: 'block', fontSize: '0.75rem', fontWeight: '600', marginBottom: '5px' }}>API Name</label>
+                <input type="text" disabled={!canEdit} value={endpoint.name} onChange={(e) => updateEndpoint(endpoint.id, 'name', e.target.value)} style={{ width: '100%', boxSizing: 'border-box', padding: '9px', borderRadius: '6px', border: '1px solid #cbd5e1', backgroundColor: canEdit ? '#ffffff' : '#f1f5f9' }} />
+              </div>
+              <div>
+                <label style={{ display: 'block', fontSize: '0.75rem', fontWeight: '600', marginBottom: '5px' }}>Endpoint URL</label>
+                <input type="url" disabled={!canEdit} value={endpoint.url} onChange={(e) => updateEndpoint(endpoint.id, 'url', e.target.value)} style={{ width: '100%', boxSizing: 'border-box', padding: '9px', borderRadius: '6px', border: '1px solid #cbd5e1', backgroundColor: canEdit ? '#ffffff' : '#f1f5f9' }} />
+              </div>
+              <button type="button" onClick={() => void openEndpoint(endpoint)} style={{ height: '38px', border: '1px solid #2563eb', borderRadius: '6px', backgroundColor: '#ffffff', color: '#1d4ed8', padding: '0 12px', fontWeight: '600', cursor: 'pointer' }}>
+                View data
+              </button>
+              {canEdit && (
+                <button type="button" onClick={() => removeEndpoint(endpoint.id)} aria-label={`Remove ${endpoint.name}`} style={{ height: '38px', border: '1px solid #fca5a5', borderRadius: '6px', backgroundColor: '#fff1f2', color: '#991b1b', padding: '0 10px', cursor: 'pointer' }}>
+                  Remove
+                </button>
+              )}
+            </div>
+          ))}
+        </div>
+      </section>
+
+      {preview && (
+        <div
+          role="presentation"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) closePreview();
+          }}
+          style={{ position: 'fixed', inset: 0, zIndex: 1000, backgroundColor: 'rgba(15,23,42,0.65)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '24px' }}
+        >
+          <div role="dialog" aria-modal="true" aria-labelledby="api-modal-title" style={{ width: 'min(1100px, 96vw)', maxHeight: '86vh', display: 'flex', flexDirection: 'column', backgroundColor: '#ffffff', borderRadius: '14px', boxShadow: '0 24px 60px rgba(15,23,42,0.35)', overflow: 'hidden' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '16px', padding: '18px 20px', borderBottom: '1px solid #e2e8f0' }}>
+              <div>
+                <h2 id="api-modal-title" style={{ margin: 0, fontSize: '1.25rem' }}>{preview.name || 'API'} data</h2>
+                <a href={preview.url} target="_blank" rel="noreferrer" style={{ color: '#64748b', fontSize: '0.75rem' }}>{preview.url}</a>
+              </div>
+              <button type="button" onClick={closePreview} aria-label="Close" style={{ border: 'none', background: '#f1f5f9', borderRadius: '7px', width: '36px', height: '36px', cursor: 'pointer', fontSize: '1.25rem' }}>×</button>
+            </div>
+
+            {preview.loaded && !preview.error && (
+              <div style={{ padding: '14px 20px', borderBottom: '1px solid #e2e8f0' }}>
+                <input
+                  type="search"
+                  value={search}
+                  onChange={(event) => { setSearch(event.target.value); setPage(1); }}
+                  placeholder={`Search ${preview.name.toLowerCase()}...`}
+                  style={{ width: '100%', boxSizing: 'border-box', padding: '9px 12px', borderRadius: '7px', border: '1px solid #cbd5e1', fontSize: '0.875rem' }}
+                />
+              </div>
+            )}
+
+            <div style={{ overflow: 'auto', flex: 1, minHeight: '260px' }}>
+              {preview.loading ? (
+                <div style={{ padding: '32px', color: '#64748b', textAlign: 'center' }}>Loading API data...</div>
+              ) : preview.error ? (
+                <div style={{ padding: '32px', color: '#991b1b', textAlign: 'center' }}>
+                  <div style={{ marginBottom: '12px' }}>{preview.error}</div>
+                  <button type="button" onClick={() => {
+                    const endpoint = endpoints.find((item) => item.id === preview.endpointId);
+                    if (endpoint) void openEndpoint(endpoint);
+                  }}>Retry</button>
+                </div>
+              ) : (
+                <>
+                  {visibleRows.length > 0 ? (
+                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.82rem' }}>
+                      <thead>
+                        <tr>
+                          {columns.map((column) => (
+                            <th key={column} style={{ position: 'sticky', top: 0, zIndex: 1, textAlign: 'left', backgroundColor: '#f8fafc', borderBottom: '1px solid #e2e8f0', padding: '10px 12px', whiteSpace: 'nowrap' }}>{column}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {visibleRows.map((row, index) => (
+                          <tr key={String(row.id ?? index)}>
+                            {columns.map((column) => (
+                              <td key={column} title={displayValue(row[column])} style={{ borderBottom: '1px solid #f1f5f9', padding: '10px 12px', maxWidth: '220px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                {displayValue(row[column])}
+                              </td>
+                            ))}
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  ) : (
+                    <div style={{ padding: '32px', color: '#64748b', textAlign: 'center' }}>No matching records found.</div>
+                  )}
+                </>
+              )}
+            </div>
+
+            {preview.loaded && !preview.error && (
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px 20px', borderTop: '1px solid #e2e8f0', color: '#64748b', fontSize: '0.8rem' }}>
+                <span>{filteredRows.length} of {preview.total} records</span>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                  <button type="button" disabled={safePage <= 1} onClick={() => setPage(safePage - 1)}>Previous</button>
+                  <span>Page {safePage} of {pageCount}</span>
+                  <button type="button" disabled={safePage >= pageCount} onClick={() => setPage(safePage + 1)}>Next</button>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 };
