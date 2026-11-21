@@ -1,0 +1,288 @@
+@startuml AnalytiCore_Class_Diagram
+title AnalytiCore Note App - System Class Diagram
+
+skinparam shadowing false
+skinparam classAttributeIconSize 0
+skinparam packageStyle rectangle
+hide empty members
+skinparam linetype ortho
+
+enum UserRole {
+  admin
+  writer
+  viewer
+}
+
+enum NavTab {
+  home
+  upload
+  api
+  profile
+  users
+}
+
+class UserAccount {
+  +id: string
+  +username: string
+  +email: string
+  +fullName: string
+  +role: UserRole
+  +isActive: boolean
+}
+
+class DocumentFile {
+  +id: string
+  +name: string
+  +size: number
+  +type: string
+  +status: indexing | ready | error
+  +content: string
+}
+
+class KnowledgeDocument {
+  +file: Blob?
+  +persistenceError: string?
+  +analyticsError: string?
+}
+
+class ChatMessage {
+  +id: string
+  +role: user | assistant | system | tool
+  +content: string
+  +timestamp: Date
+  +isStreaming: boolean?
+}
+
+class GeneratedFileArtifact {
+  +id: string
+  +title: string
+  +filename: string
+  +mimeType: string
+  +content: string
+  +binaryContent: Uint8Array?
+}
+
+class ApiConfig {
+  +hostUrl: string
+  +modelName: string
+  +temperature: number
+  +contextWindow: number
+  +isConnected: boolean
+}
+
+class TabularDataset {
+  +id: string
+  +name: string
+  +headers: string[*]
+  +numericColumns: string[*]
+  +rows: Map[*]
+}
+
+class ClusterAnalysis {
+  +clusters: Cluster[*]
+  +classifiedRows: ClassifiedRow[*]
+  +rowsAnalyzed: number
+  +error: string?
+}
+
+class RegressionAnalysis {
+  +points: RegressionPoint[*]
+  +rSquared: number
+  +rowsAnalyzed: number
+  +error: string?
+}
+
+DocumentFile <|-- KnowledgeDocument
+UserAccount --> UserRole : role
+ChatMessage "1" *-- "0..*" GeneratedFileArtifact : artifacts
+
+package "React Application" {
+  class App {
+    -currentUser: UserAccount?
+    -activeTab: NavTab
+    -documents: KnowledgeDocument[*]
+    -apiConfig: ApiConfig
+    +checkAuth(): Promise<void>
+    +handleLogout(): void
+    +persistDocument(document): Promise<KnowledgeDocument>
+    +removeDocument(documentId): Promise<void>
+  }
+
+  class AuthPage
+  class Sidebar
+  class HomePage
+  class DataUploadPage
+  class ApiConnectionPage
+  class ProfilePage
+  class UserManagementPage
+  class AgentChatbox {
+    +apiConfig: ApiConfig
+    +documents: KnowledgeDocument[*]
+    +messages: ChatMessage[*]
+    +handleSend(): Promise<void>
+  }
+
+  App "1" o-- "0..1" AuthPage
+  App "1" o-- "1" Sidebar
+  App "1" o-- "0..1" HomePage
+  App "1" o-- "0..1" DataUploadPage
+  App "1" o-- "0..1" ApiConnectionPage
+  App "1" o-- "0..1" ProfilePage
+  App "1" o-- "0..1" UserManagementPage
+  App "1" *-- "1" AgentChatbox
+
+  App --> "0..1" UserAccount : currentUser
+  App --> "0..*" KnowledgeDocument : documents
+  App --> "1" ApiConfig : apiConfig
+  AgentChatbox "1" *-- "1..*" ChatMessage : messages
+}
+
+package "Agent and Analytics Services" {
+  class NluRouterService <<utility>> {
+    +{static} classifyNaturalLanguageIntent(query): Object
+    +{static} expandQueryWithSynonyms(query): string
+  }
+
+  class AgentToolsService <<utility>> {
+    +{static} executeAgentTool(name, args, context): Promise<string>
+  }
+
+  class DatasetAnalyticsService <<utility>> {
+    +{static} getStructuredDatasets(documents): TabularDataset[*]
+    +{static} classifyRows(dataset): ClusterAnalysis
+    +{static} predictWithLinearRegression(dataset, target, feature): RegressionAnalysis
+  }
+
+  class RetailAnalyticsService <<utility>> {
+    +{static} getVisitDays(dataset): Object[*]
+    +{static} getSpendProgression(dataset): Object[*]
+    +{static} getPopularItems(dataset): Object[*]
+    +{static} predictProductPrices(history, product): Object
+  }
+
+  class ExcelExportService <<utility>> {
+    +{static} buildExcelWorkbookBytes(headers, rows): Uint8Array
+  }
+
+  AgentChatbox ..> NluRouterService : routes intent
+  AgentChatbox ..> AgentToolsService : executes tools
+  AgentChatbox ..> GeneratedFileArtifact : creates exports
+  AgentToolsService ..> DatasetAnalyticsService : uses
+  AgentToolsService ..> RetailAnalyticsService : uses
+  AgentToolsService ..> ExcelExportService : exports Excel
+  HomePage ..> DatasetAnalyticsService : displays analytics
+  HomePage ..> RetailAnalyticsService : displays charts
+}
+
+package "Client Services" {
+  class AuthApiClient <<utility>> {
+    +{static} fetchAuthStatus(): Promise<UserAccount?>
+    +{static} loginUser(identifier, password): Promise<UserAccount>
+    +{static} logoutUser(): Promise<void>
+    +{static} updateUserProfile(payload): Promise<UserAccount>
+    +{static} createUser(payload): Promise<UserAccount>
+    +{static} updateUserByAdmin(id, payload): Promise<UserAccount>
+  }
+
+  class DocumentIngestionService <<utility>> {
+    +{static} isSupportedDocument(file): boolean
+    +{static} extractDocumentText(file): Promise<string>
+    +{static} searchDocuments(documents, query): string
+  }
+
+  class DocumentStorageService <<utility>> {
+    +{static} loadStoredDocuments(): Promise<KnowledgeDocument[*]>
+    +{static} saveStoredDocument(document): Promise<void>
+    +{static} deleteStoredDocument(documentId): Promise<void>
+  }
+
+  App ..> AuthApiClient : authentication
+  App ..> DocumentStorageService : document persistence
+  AuthPage ..> AuthApiClient : login/setup
+  ProfilePage ..> AuthApiClient : profile/password
+  UserManagementPage ..> AuthApiClient : user administration
+  DataUploadPage ..> DocumentIngestionService : extraction
+  AgentChatbox ..> DocumentIngestionService : retrieval
+}
+
+package "Express API and MySQL" {
+  class AnalytiCoreApiServer <<service>> {
+    +GET /api/auth/status()
+    +POST /api/auth/login()
+    +POST /api/auth/logout()
+    +GET /api/profile()
+    +PUT /api/profile()
+    +GET /api/users()
+    +POST /api/users()
+    +PUT /api/users/:id()
+    +DELETE /api/users/:id()
+    +GET /api/documents()
+    +POST /api/documents()
+    +PUT /api/documents/:id()
+    +DELETE /api/documents/:id/
+  }
+
+  class AuthMiddlewareService <<service>> {
+    +{static} hashPassword(password): string
+    +{static} verifyPassword(password, hash): boolean
+    +{static} createUserSession(connection, userId): string
+  }
+
+  class UserRecord <<entity>> {
+    +id: string
+    +username: string
+    +email: string
+    +role: UserRole
+    +passwordHash: string
+    +isActive: boolean
+  }
+
+  class UserSessionRecord <<entity>> {
+    +id: string
+    +userId: string
+    +tokenHash: string
+    +expiresAt: Date
+  }
+
+  class DocumentRecord <<entity>> {
+    +id: string
+    +name: string
+    +sizeBytes: number
+    +mimeType: string
+    +originalFile: byte[*]?
+    +extractedText: string
+    +status: indexing | ready | error
+  }
+
+  class DocumentChunkRecord <<entity>> {
+    +id: number
+    +documentId: string
+    +chunkIndex: number
+    +content: string
+  }
+
+  UserRecord "1" *-- "0..*" UserSessionRecord
+  DocumentRecord "1" *-- "0..*" DocumentChunkRecord
+  AnalytiCoreApiServer ..> AuthMiddlewareService : authentication/RBAC
+  AnalytiCoreApiServer ..> UserRecord : manages
+  AnalytiCoreApiServer ..> DocumentRecord : manages
+  AuthApiClient ..> AnalytiCoreApiServer : HTTP
+  DocumentStorageService ..> AnalytiCoreApiServer : HTTP
+}
+
+package "External Systems" {
+  class OllamaClient <<external>> {
+    +host: string
+    +chat(model, messages, tools): ChatResponse
+  }
+
+  class ExternalRestApi <<external>> {
+    +get(url, headers): JSON | Text
+  }
+
+  AgentChatbox ..> OllamaClient : generates answers
+  NluRouterService ..> OllamaClient : refines intent
+  AnalytiCoreApiServer ..> ExternalRestApi : fetches external context
+}
+
+@enduml

@@ -1,0 +1,162 @@
+@startuml AnalytiCore_Sequence_Diagram
+title AnalytiCore Note App - Main System Sequence Diagram
+
+actor "User" as User
+
+participant "React SPA" as UI
+participant "Auth API Client" as AuthClient
+participant "Document Ingestion" as Ingestion
+participant "Document Storage" as Storage
+participant "Express API" as API
+database "MySQL 8.4" as MySQL
+participant "Agent Chatbox" as Chat
+participant "NLU / Agent Tools" as Agent
+participant "Ollama / Llama 3" as Ollama
+participant "External REST API" as ExternalAPI
+
+== Application Startup and Authentication ==
+
+User -> UI : Open application
+UI -> AuthClient : fetchAuthStatus()
+AuthClient -> API : GET /api/auth/status
+API -> MySQL : Validate session and user
+MySQL --> API : Session and account status
+API --> AuthClient : hasUsers, UserAccount or null
+AuthClient --> UI : Authentication status
+
+alt No user accounts
+  User -> UI : Submit initial administrator details
+  UI -> AuthClient : setupInitialAdmin(payload)
+  AuthClient -> API : POST /api/auth/setup
+  API -> MySQL : Hash password and create admin
+  MySQL --> API : Administrator created
+  API --> AuthClient : HttpOnly session cookie
+else Existing account
+  User -> UI : Enter credentials
+  UI -> AuthClient : loginUser(identifier, password)
+  AuthClient -> API : POST /api/auth/login
+  API -> MySQL : Verify account and password
+  MySQL --> API : Active user or authentication error
+  API --> AuthClient : UserAccount and session cookie
+end
+
+UI --> User : Show role-appropriate workspace
+
+== Load Stored Documents ==
+
+UI -> Storage : loadStoredDocuments()
+Storage -> API : GET /api/documents
+API -> MySQL : SELECT documents and text chunks
+MySQL --> API : Stored document records
+API --> Storage : Document metadata and content
+Storage --> UI : KnowledgeDocument[]
+
+== Upload and Persist a Document ==
+
+User -> UI : Select and upload PDF, CSV, TXT, PNG or JPG
+UI -> Ingestion : isSupportedDocument(file)
+
+alt Unsupported or too large
+  Ingestion --> UI : Validation error
+  UI --> User : Display upload error
+else Valid document
+  Ingestion -> Ingestion : extractDocumentText(file)
+
+  alt Text extraction fails
+    Ingestion --> UI : Extraction error
+  else Text extracted
+    Ingestion --> UI : Extracted content and token count
+  end
+
+  UI -> Storage : saveStoredDocument(document)
+  Storage -> API : POST /api/documents\nMultipart file and metadata
+  API -> API : Verify Admin or Writer role\nCalculate SHA-256 checksum
+  API -> MySQL : INSERT or update document
+  API -> MySQL : Replace document text chunks
+  MySQL --> API : Persistence result
+  API --> Storage : 201 Created
+  Storage --> UI : Updated document
+  UI --> User : Document ready or error status
+end
+
+== Dashboard Analytics ==
+
+User -> UI : Open Dashboard and Analytics
+UI -> UI : getStructuredDatasets(documents)
+UI -> UI : Calculate retail metrics
+UI -> UI : Run K-means clustering
+UI -> UI : Run linear regression
+UI -> UI : Generate product price forecast
+UI --> User : Display charts and analytics
+
+== Agentic AI Question ==
+
+User -> Chat : Enter analytical question
+Chat -> Chat : Append user message
+Chat -> Agent : classifyNaturalLanguageIntent(query)
+Agent --> Chat : Intent plan
+
+Chat -> Chat : buildGlobalKnowledgeContext(documents)
+Chat -> Storage : loadApiEndpoints()
+
+Chat -> API : POST /api/external-api
+API -> ExternalAPI : Fetch configured endpoint
+ExternalAPI --> API : JSON or text response
+API --> Chat : External API context
+
+Chat -> Ollama : ollama.chat(model, context, tools, options)
+Ollama --> Chat : Tool-call request or final answer
+
+loop Up to five agent steps
+  alt Native tool call requested
+    Chat -> Agent : executeAgentTool(name, arguments)
+    Agent -> Ingestion : Retrieve document content
+    Ingestion --> Agent : Relevant chunks
+    Agent -> Agent : Run analytics or create artifact
+    Agent --> Chat : Tool output
+    Chat -> Ollama : Send tool output for synthesis
+    Ollama --> Chat : Next tool call or final answer
+  else No tool call
+    Chat --> Chat : finalAnswer = response.content
+  end
+end
+
+alt Ollama unavailable or tools unsupported
+  Chat -> Chat : Run deterministic fallback logic
+  Chat --> User : Display fallback or connectivity error
+else Successful response
+  Chat --> User : Display answer and downloadable artifacts
+end
+
+== Profile and User Management ==
+
+User -> UI : Update profile or password
+UI -> AuthClient : updateProfile / changePassword
+AuthClient -> API : PUT /api/profile or /api/profile/password
+API -> MySQL : Update profile or password hash
+MySQL --> API : Updated account
+API --> AuthClient : Updated UserAccount
+AuthClient --> UI : Refresh current user
+
+alt Administrator
+  User -> UI : Create or manage users
+  UI -> AuthClient : create/update/delete user
+  AuthClient -> API : POST/PUT/DELETE /api/users
+  API -> API : Require administrator role
+  API -> MySQL : Apply user change
+  MySQL --> API : Result
+  API --> AuthClient : Updated user list or account
+  AuthClient --> UI : Refresh user management view
+end
+
+== Sign Out ==
+
+User -> UI : Sign out
+UI -> AuthClient : logoutUser()
+AuthClient -> API : POST /api/auth/logout
+API -> MySQL : Delete session record
+API --> AuthClient : Clear HttpOnly session cookie
+AuthClient --> UI : Session cleared
+UI --> User : Return to login page
+
+@enduml

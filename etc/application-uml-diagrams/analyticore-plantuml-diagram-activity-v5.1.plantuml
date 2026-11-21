@@ -1,0 +1,149 @@
+@startuml AnalytiCore_Activity_Diagram
+title AnalytiCore Note App - End-to-End Activity Diagram
+
+skinparam shadowing false
+skinparam ActivityBackgroundColor #F8FAFC
+skinparam ActivityBorderColor #334155
+skinparam ActivityDiamondBackgroundColor #FEF3C7
+skinparam ActivityDiamondBorderColor #D97706
+skinparam SwimlaneBorderColor #CBD5E1
+skinparam SwimlaneTitleFontStyle bold
+
+|User|
+start
+:Open AnalytiCore application;
+
+|AnalytiCore SPA|
+:Check session and authentication status;
+
+|Express API and MySQL|
+:Purge expired sessions;
+:Query the users table;
+
+if (Valid session cookie exists?) then (yes)
+  :Load authenticated user account;
+else (no)
+  if (Any users exist?) then (no)
+    |User|
+    :Complete first-run administrator setup;
+    |Express API and MySQL|
+    :Hash password using scrypt;
+    :Create the administrator account;
+    :Create an HttpOnly session cookie;
+  else (yes)
+    |User|
+    :Enter username or email and password;
+    |Express API and MySQL|
+    :Verify password and account status;
+
+    if (Credentials valid and account active?) then (yes)
+      :Create the authenticated session;
+    else (no)
+      |AnalytiCore SPA|
+      :Display authentication error;
+      stop
+    endif
+  endif
+endif
+
+|AnalytiCore SPA|
+:Load stored documents;
+:Apply role-based permissions;
+:Open the application workspace;
+
+repeat
+  |User|
+  :Choose a workspace action;
+
+  if (Dashboard and analytics?) then (yes)
+    |AnalytiCore SPA|
+    :Scan ready structured documents;
+    :Infer columns and render retail charts;
+    :Run K-means clustering;
+    :Run linear regression;
+    :Calculate product price forecasts;
+
+  elseif (Data ingestion?) then (yes)
+    |User|
+    if (Preview or download document?) then (yes)
+      |Express API and MySQL|
+      :Stream the original document;
+    elseif (Upload document?) then (yes)
+      |AnalytiCore SPA|
+      if (Document format and size are valid?) then (yes)
+        |Express API and MySQL|
+        :Store the document with indexing status;
+        |AnalytiCore SPA|
+        :Extract text or invoice table data;
+        :Split text into chunks;
+        |Express API and MySQL|
+        :Store document chunks and mark it ready;
+      else (no)
+        |AnalytiCore SPA|
+        :Reject the document;
+        :Display a validation error;
+      endif
+    else (Delete document)
+      |Express API and MySQL|
+      :Delete the document;
+      :Delete associated text chunks;
+    endif
+
+  elseif (Ask the AI analyst?) then (yes)
+    |User|
+    :Enter a business, financial, or actuarial question;
+    |AnalytiCore SPA|
+    :Build the system prompt and conversation context;
+    :Retrieve relevant document chunks;
+    :Calculate any required local aggregates;
+    :Invoke local agent tools if needed;
+
+    |Ollama / Llama 3|
+    :Generate an answer using the retrieved context;
+
+    |AnalytiCore SPA|
+    :Display the answer;
+    :Create or offer downloadable artifacts;
+
+  elseif (API and model setup?) then (yes)
+    |AnalytiCore SPA|
+    :Update Ollama or external API settings;
+
+  elseif (My profile?) then (yes)
+    |User|
+    :Update profile details or change password;
+    |Express API and MySQL|
+    :Save profile changes;
+    :Re-hash password if it changed;
+
+  elseif (User administration?) then (yes)
+    |Express API and MySQL|
+    :Create or update a user;
+    :Change a role or password;
+    :Activate, deactivate, or delete an account;
+  endif
+
+  |User|
+repeat while (Continue working?) is (yes)
+->no;
+
+|Express API and MySQL|
+:Delete the session;
+:Clear the HttpOnly session cookie;
+
+|AnalytiCore SPA|
+:Reset application state;
+:Return to the authentication page;
+
+|User|
+stop
+
+legend right
+  |= Swimlane |= Responsibility |
+  | User | Enters credentials and chooses role-based actions |
+  | AnalytiCore SPA | Analytics, document processing, agent tools and chat UI |
+  | Express API and MySQL | Authentication, RBAC, persistence and API proxy |
+  | Ollama / Llama 3 | Local AI reasoning and answer generation |
+endlegend
+
+@enduml

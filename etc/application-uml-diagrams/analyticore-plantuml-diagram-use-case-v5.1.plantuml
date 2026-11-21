@@ -1,0 +1,121 @@
+@startuml AnalytiCore_Use_Case_Diagram
+title AnalytiCore — Use Case Diagram
+
+left to right direction
+skinparam packageStyle rectangle
+skinparam shadowing false
+
+actor "Viewer" as Viewer
+actor "Writer" as Writer
+actor "Administrator" as Admin
+
+Viewer <|-- Writer
+Writer <|-- Admin
+
+actor "MySQL Database" as MySQL
+actor "Ollama / Llama 3" as Ollama
+actor "External REST API" as ExternalAPI
+
+rectangle "AnalytiCore Application" {
+
+  package "Authentication" {
+    usecase "Sign in" as Login
+    usecase "Sign out" as Logout
+    usecase "Complete first-run\nadmin setup" as Setup
+  }
+
+  package "Profile Management" {
+    usecase "View own profile" as ViewProfile
+    usecase "Update profile" as UpdateProfile
+    usecase "Change password" as ChangePassword
+  }
+
+  package "Analytics Dashboard" {
+    usecase "View dashboard metrics" as Dashboard
+    usecase "Run K-means clustering" as Clustering
+    usecase "Run linear regression\nand forecasts" as Forecast
+  }
+
+  package "Document Management" {
+    usecase "Upload documents" as Upload
+    usecase "Preview/download documents" as Download
+    usecase "Extract document text" as Extract
+    usecase "Store document metadata\nand text chunks" as Persist
+    usecase "Delete documents" as DeleteDocument
+  }
+
+  package "Agentic AI Assistant" {
+    usecase "Ask analytical questions" as Chat
+    usecase "Retrieve document context" as Retrieve
+    usecase "Execute agent tools" as AgentTools
+    usecase "Generate/export artifacts" as Export
+    usecase "Fetch external API context" as FetchAPI
+  }
+
+  package "API Configuration" {
+    usecase "View API/model status" as ViewAPI
+    usecase "Configure Ollama model" as ConfigureOllama
+    usecase "Configure external APIs" as ConfigureAPI
+  }
+
+  package "User Administration" {
+    usecase "Create user account" as CreateUser
+    usecase "Update user details and role" as UpdateUser
+    usecase "Activate/deactivate user" as ManageStatus
+    usecase "Reset user password" as ResetPassword
+    usecase "Delete user account" as DeleteUser
+  }
+}
+
+Viewer --> Login
+Viewer --> Logout
+Viewer --> ViewProfile
+Viewer --> UpdateProfile
+Viewer --> ChangePassword
+Viewer --> Dashboard
+Viewer --> Clustering
+Viewer --> Forecast
+Viewer --> Download
+Viewer --> Chat
+Viewer --> ViewAPI
+
+Writer --> Upload
+Writer --> DeleteDocument
+Writer --> ConfigureOllama
+Writer --> ConfigureAPI
+
+Admin --> Setup
+Admin --> CreateUser
+Admin --> UpdateUser
+Admin --> ManageStatus
+Admin --> ResetPassword
+Admin --> DeleteUser
+
+Login --> MySQL
+Setup --> MySQL
+ViewProfile --> MySQL
+UpdateProfile --> MySQL
+ChangePassword --> MySQL
+Download --> MySQL
+Persist --> MySQL
+DeleteDocument --> MySQL
+CreateUser --> MySQL
+UpdateUser --> MySQL
+ManageStatus --> MySQL
+ResetPassword --> MySQL
+DeleteUser --> MySQL
+
+Upload ..> Extract : <<include>>
+Upload ..> Persist : <<include>>
+
+Chat ..> Retrieve : <<include>>
+AgentTools ..> Chat : <<extend>>
+Export ..> Chat : <<extend>>
+FetchAPI ..> Chat : <<extend>>
+
+Chat --> Ollama
+ConfigureOllama --> Ollama
+FetchAPI --> ExternalAPI
+ConfigureAPI --> ExternalAPI
+
+@enduml

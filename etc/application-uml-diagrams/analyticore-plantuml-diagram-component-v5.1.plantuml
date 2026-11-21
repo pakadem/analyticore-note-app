@@ -1,0 +1,89 @@
+@startuml AnalytiCore_Deployment_Diagram
+title AnalytiCore Note App - Deployment Diagram
+
+skinparam shadowing false
+skinparam nodesep 45
+skinparam ranksep 55
+
+actor "User\n(Admin / Writer / Viewer)" as User
+
+node "Local Workstation" as Workstation {
+
+  node "Web Browser" as Browser {
+    artifact "AnalytiCore React 18 SPA" as SPA
+    artifact "Vite Development Bundle" as ViteBundle
+    artifact "PDF.js Document Processing" as PDFWorker
+    artifact "Excel Workbook Generator" as ExcelBuilder
+    artifact "Ollama Browser SDK" as OllamaSDK
+  }
+
+  node "Vite Development Server\nPort 3000" as Vite #EFF6FF {
+    artifact "Vite 5\nES Modules and HMR" as ViteServer
+  }
+
+  node "Node.js Application Server\nPort 3002" as NodeServer #FEF2F2 {
+    artifact "Express 5 API" as Express
+    artifact "Authentication Middleware" as Auth
+    artifact "Document API" as DocumentAPI
+    artifact "External API Proxy" as ExternalProxy
+    artifact "Static Production Bundle" as StaticBundle
+  }
+
+  node "Docker Engine" as Docker #ECFDF5 {
+    database "MySQL 8.4\nPort 3307 -> 3306" as MySQL {
+      artifact "users"
+      artifact "user_sessions"
+      artifact "documents"
+      artifact "document_chunks"
+    }
+
+    artifact "Docker Volume\nanalyticore-mysql" as MySQLVolume
+  }
+
+  node "Ollama Runtime\nPort 11434" as OllamaHost #FAF5FF {
+    artifact "Ollama Server" as Ollama
+    artifact "Llama 3 Model" as Llama
+  }
+}
+
+cloud "External HTTP/HTTPS Services" as Internet {
+  node "External REST APIs" as ExternalApis
+}
+
+User --> Browser : Uses application
+
+Browser --> Vite : Development mode\nHTTP :3000
+Browser --> Express : Production mode\nHTTP :3002
+Vite --> Express : /api proxy\nHTTP :3002
+
+SPA --> ViteBundle : Uses Vite modules
+SPA --> PDFWorker : Extract PDF text
+SPA --> ExcelBuilder : Generate XLSX files
+SPA --> OllamaSDK : Send chat and tool requests
+OllamaSDK --> Ollama : HTTP\n/api/chat
+
+Express --> Auth : Session and RBAC
+Express --> DocumentAPI : Document CRUD
+Express --> ExternalProxy : External API requests
+Express --> StaticBundle : Serves dist/
+
+DocumentAPI --> MySQL : mysql2\nTCP :3307
+Auth --> MySQL : Authentication queries
+MySQL --> MySQLVolume : Persistent storage
+
+ExternalProxy --> ExternalApis : HTTP/HTTPS\nSSRF-filtered requests
+Ollama --> Llama : Model inference
+
+note right of Vite
+  Development deployment:
+  npm run db:up
+  npm run dev
+end note
+
+note right of NodeServer
+  Production deployment:
+  npm run build
+  npm start
+end note
+
+@enduml
